@@ -6,6 +6,8 @@ import re
 import secrets
 import threading
 import time
+from urllib.parse import urlsplit,unquote
+from group_links import resolve,visible_sql
 
 TZ = timezone(timedelta(hours=8))
 SEND_PERMISSIONS = {k: True for k in ('can_send_messages','can_send_audios','can_send_documents',
@@ -43,13 +45,20 @@ def initialize(db):
 
 
 def snapshot(db, gid=None):
-    where, args = ('WHERE group_id=?', [gid]) if gid is not None else ('', [])
+    where, args = ('WHERE group_id=? AND '+visible_sql(), [gid]) if gid is not None else ('WHERE '+visible_sql(), [])
     plans = [dict(r) for r in db.execute(f'SELECT * FROM announcement_plans {where} ORDER BY id DESC LIMIT 200',args)]
     for p in plans:
         p['times'] = json.loads(p['times'])
     deliveries = [dict(r) for r in db.execute(f'SELECT * FROM announcement_deliveries {where} ORDER BY id DESC LIMIT 200',args)]
     topics = [dict(r) for r in db.execute(f'SELECT * FROM forum_topics {where} ORDER BY topic_id',args)]
-    return dict(announcements=plans, announcement_deliveries=deliveries, forum_topics=topics)
+    arrivals=[dict(r) for r in db.execute(f'''SELECT a.group_id,a.user_id,a.status,a.inviter_id,a.invite_url,a.joined_at,
+      COALESCE(m.name,CAST(a.user_id AS TEXT)) name,
+      (SELECT r.inviter_id FROM referrals r WHERE r.group_id=a.group_id AND r.user_id=a.user_id) credited_inviter_id,
+      EXISTS(SELECT 1 FROM referrals r WHERE r.group_id=a.group_id AND r.user_id=a.user_id) counted
+      FROM member_arrivals a LEFT JOIN members m ON m.group_id=a.group_id AND m.user_id=a.user_id
+      WHERE {('a.group_id=? AND ' if gid is not None else '')+visible_sql('a.group_id')}
+      ORDER BY a.joined_at DESC LIMIT 100''',args)]
+    return dict(announcements=plans, announcement_deliveries=deliveries, forum_topics=topics,joins=arrivals)
 
 
 def next_time(plan, after):
@@ -80,9 +89,85 @@ class CommunityRuntime:
     def inviter(self, gid, link):
         if not link:
             return None
+        def code(url):
+            parsed=urlsplit(url.strip())
+            if parsed.hostname not in ('t.me','www.t.me','telegram.me'):
+                return url.strip()
+            path=unquote(parsed.path).rstrip('/')
+            return path.replace('/joinchat/','/+',1)
         with self.store.db() as db:
-            row=db.execute('SELECT user_id FROM invites WHERE group_id=? AND url=? AND active=1',(gid,link)).fetchone()
-        return row[0] if row else None
+            normalized=code(link)
+            variants={link.strip(),'https://t.me'+normalized,'https://telegram.me'+normalized}
+            if normalized.startswith('/+'):
+                variants.add('https://t.me/joinchat/'+normalized[2:])
+            rows=[dict(r) for r in db.execute('SELECT group_id,user_id,url FROM invites WHERE active=1 AND url IN ('+','.join('?' for _ in variants)+')',list(variants))]
+        for row in rows:
+            if code(row['url'])!=code(link):continue
+            with self.store.db() as db:
+                canonical=resolve(db,row['group_id'])
+                target=resolve(db,gid)
+            if canonical!=target:
+                self.prove_migration(row['group_id'],target)
+                with self.store.db() as db:canonical=resolve(db,row['group_id'])
+            if canonical==target:return row['user_id']
+        return None
+
+    def prove_migration(self, old, expected=None):
+        if not self.bot.api:return False
+        new=None
+        try:
+            info=self.bot.api.call('getChat',chat_id=old)
+            if isinstance(info,dict) and info.get('id') not in (None,old):new=info['id']
+        except Exception as error:
+            new=getattr(error,'parameters',{}).get('migrate_to_chat_id')
+        if type(new) is not int or (expected is not None and new!=expected):return False
+        with self.member_lock,self.announcement_lock:
+            self.store.migrate_group(old,new)
+        return True
+
+    def probe_migrations(self):
+        with self.store.db() as db:
+            rows=db.execute("SELECT id FROM groups WHERE disconnected=0 AND id<0 AND id>-1000000000000 AND id NOT IN (SELECT old_id FROM group_migrations) AND migration_probe<? ORDER BY migration_probe LIMIT 10",(time.time()-3600,)).fetchall()
+            for row in rows:db.execute('UPDATE groups SET migration_probe=? WHERE id=?',(time.time(),row['id']))
+        for row in rows:self.prove_migration(row['id'])
+
+    def award(self,gid,uid,inviter):
+        if inviter is None:
+            self.store.event(gid,uid,'邀请未归因','已入群/验证，但缺少可匹配的个人邀请链接；未猜测邀请人')
+            return False
+        if self.store.referral(gid,uid,inviter):return True
+        self.store.event(gid,uid,'邀请未重复计分','自己邀请自己，或此成员在该社群已有有效邀请记录')
+        return False
+
+    def repair_referrals(self):
+        with self.store.db() as db:
+            rows=[dict(r) for r in db.execute("SELECT a.* FROM member_arrivals a WHERE status IN ('verified','not_required') AND (invite_url IS NOT NULL OR inviter_id IS NOT NULL) AND (inviter_id IS NULL OR inviter_id<>user_id) AND NOT EXISTS(SELECT 1 FROM referrals r WHERE r.group_id=a.group_id AND r.user_id=a.user_id) AND "+visible_sql('a.group_id'))]
+        for row in rows:
+            inviter=row['inviter_id'] if row['inviter_id'] is not None else self.inviter(row['group_id'],row['invite_url'])
+            if inviter is None:continue
+            with self.store.db() as db:db.execute('UPDATE member_arrivals SET inviter_id=? WHERE group_id=? AND user_id=?',(inviter,row['group_id'],row['user_id']))
+            self.award(row['group_id'],row['user_id'],inviter)
+
+    def manual_attribution(self, body, actor):
+        gid,uid,invite_id=int(body['group_id']),int(body['user_id']),int(body['invite_id'])
+        reason=body.get('reason','')
+        if not isinstance(reason,str) or not 5<=len(reason.strip())<=300:
+            raise ValueError('请填写5至300字的核实依据')
+        with self.member_lock:
+            with self.store.db() as db:
+                db.execute('BEGIN IMMEDIATE')
+                gid=resolve(db,gid)
+                row=db.execute("SELECT * FROM member_arrivals WHERE group_id=? AND user_id=? AND status IN ('verified','not_required') AND inviter_id IS NULL AND "+visible_sql(),(gid,uid)).fetchone()
+                invite=db.execute('SELECT * FROM invites WHERE id=? AND group_id=?',(invite_id,gid)).fetchone()
+                if not row or not invite or uid==invite['user_id']:
+                    raise ValueError('请选择已验证但来源缺失的成员及其真实邀请人，不能自邀')
+                if db.execute('SELECT 1 FROM referrals WHERE group_id=? AND user_id=?',(gid,uid)).fetchone():
+                    raise ValueError('此成员已经计入邀请，不能重复补记')
+                db.execute('UPDATE member_arrivals SET inviter_id=?,invite_url=? WHERE group_id=? AND user_id=?',
+                           (invite['user_id'],invite['url'],gid,uid))
+            credited=self.store.referral(gid,uid,invite['user_id'])
+            self.store.event(gid,uid,'人工补记邀请',actor['username']+' 核实邀请人 '+str(invite['user_id'])+'；依据：'+reason.strip())
+        return {'ok':True,'credited':credited}
 
     def observe_topic(self, message):
         topic = message.get('message_thread_id')
@@ -105,31 +190,36 @@ class CommunityRuntime:
                 except Exception as fallback:
                     self.store.event(group['id'],user['id'],'欢迎词失败',str(fallback))
 
-    def arrive(self, group, user, source_time=None, inviter=None):
+    def arrive(self, group, user, source_time=None, inviter=None, invite_url=None):
         if user.get('is_bot'):
             return
         gid, uid = group['id'], user['id']
         source_time = source_time or time.time()
         with self.member_lock:
+            with self.store.db() as db:
+                managed=db.execute('SELECT disconnected FROM groups WHERE id=?',(gid,)).fetchone()
+            if not managed or managed['disconnected']:return
             self.store.member(gid,user,True)
             with self.store.db() as db:
                 old=db.execute('SELECT * FROM member_arrivals WHERE group_id=? AND user_id=?',(gid,uid)).fetchone()
                 if old and old['active'] and source_time <= old['joined_at']+60:
                     if inviter is not None:
                         db.execute('UPDATE member_arrivals SET inviter_id=COALESCE(inviter_id,?) WHERE group_id=? AND user_id=?',(inviter,gid,uid))
+                    if invite_url:
+                        db.execute('UPDATE member_arrivals SET invite_url=COALESCE(invite_url,?) WHERE group_id=? AND user_id=?',(invite_url,gid,uid))
                     duplicate=dict(old)
                 else:
                     duplicate=None
             if duplicate:
                 if duplicate['status'] in ('verified','not_required') and inviter is not None:
-                    self.store.referral(gid,uid,inviter)
+                    self.award(gid,uid,inviter)
                 return
             if old and old['prompt_id']:
                 self.clean_prompt(dict(old))
             status='pending' if group['verify'] else 'not_required'
             with self.store.db() as db:
-                db.execute('INSERT OR REPLACE INTO member_arrivals(group_id,user_id,joined_at,status,inviter_id) VALUES(?,?,?,?,?)',
-                           (gid,uid,source_time,status,inviter))
+                db.execute('INSERT OR REPLACE INTO member_arrivals(group_id,user_id,joined_at,status,inviter_id,invite_url) VALUES(?,?,?,?,?,?)',
+                           (gid,uid,source_time,status,inviter,invite_url))
             restricted=False
             if group['verify']:
                 try:
@@ -169,7 +259,7 @@ class CommunityRuntime:
                 with self.store.db() as db:
                     db.execute('UPDATE member_arrivals SET status=? WHERE group_id=? AND user_id=?',(status,gid,uid))
                 if status=='not_required':
-                    self.store.referral(gid,uid,inviter)
+                    self.award(gid,uid,inviter)
 
     def leave(self, gid, user):
         self.store.member(gid,user,False)
@@ -203,6 +293,9 @@ class CommunityRuntime:
             if not row or row['user_id']!=cb['from']['id']:
                 return answer('This verification belongs to another member or is no longer available.')
             row=dict(row)
+            with self.store.db() as db:
+                managed=db.execute('SELECT 1 FROM groups WHERE id=? AND disconnected=0',(row['group_id'],)).fetchone()
+            if not managed:return answer('This group is no longer managed here. Please contact a group administrator.')
             if row['status']!='pending' or row['expires']<=time.time():
                 self.expire()
                 return answer('This verification has ended. Contact an administrator if you are still muted.')
@@ -217,7 +310,7 @@ class CommunityRuntime:
                               permissions=permissions,until_date=0,use_independent_chat_permissions=True)
             with self.store.db() as db:
                 db.execute("UPDATE member_arrivals SET status='verified' WHERE nonce=?",(row['nonce'],))
-            self.store.referral(row['group_id'],row['user_id'],row['inviter_id'])
+            self.award(row['group_id'],row['user_id'],row['inviter_id'])
             self.clean_prompt(row)
             self.store.event(row['group_id'],row['user_id'],'群内验证成功','已恢复群内发言权限；有效邀请仅奖励一次')
             answer('Verification successful. You may now participate in the community!')
@@ -225,9 +318,9 @@ class CommunityRuntime:
     def expire(self):
         with self.member_lock:
             with self.store.db() as db:
-                due=[dict(r) for r in db.execute("SELECT * FROM member_arrivals WHERE status='pending' AND expires<=?",(time.time(),))]
-                db.execute("UPDATE member_arrivals SET status='timed_out' WHERE status='pending' AND expires<=?",(time.time(),))
-                cleanup=[dict(r) for r in db.execute("SELECT * FROM member_arrivals WHERE status IN ('timed_out','verified','left') AND prompt_id IS NOT NULL AND cleanup_after<=?",(time.time(),))]
+                due=[dict(r) for r in db.execute("SELECT * FROM member_arrivals WHERE status='pending' AND expires<=? AND "+visible_sql(),(time.time(),))]
+                db.execute("UPDATE member_arrivals SET status='timed_out' WHERE status='pending' AND expires<=? AND "+visible_sql(),(time.time(),))
+                cleanup=[dict(r) for r in db.execute("SELECT * FROM member_arrivals WHERE status IN ('timed_out','verified','left') AND prompt_id IS NOT NULL AND cleanup_after<=? AND "+visible_sql(),(time.time(),))]
             for row in due:
                 self.store.event(row['group_id'],row['user_id'],'验证超时','验证消息将移除，用户保持禁言，不踢出社群')
             for row in cleanup:
@@ -248,7 +341,7 @@ class CommunityRuntime:
         if topic is not None and (type(topic) is not int or topic<1):
             raise ValueError('话题 ID 须为正整数')
         with self.store.db() as db:
-            if not db.execute('SELECT 1 FROM groups WHERE id=? AND active=1',(gid,)).fetchone():
+            if not db.execute('SELECT 1 FROM groups WHERE id=? AND active=1 AND disconnected=0',(gid,)).fetchone():
                 raise ValueError('请选择已连接社群')
         mode=body.get('mode','now')
         if mode not in ('now','once','daily'):
@@ -302,6 +395,8 @@ class CommunityRuntime:
             next_run=next_time(dict(row),datetime.now(TZ)) if action=='resume' else None
             if action=='resume' and (not next_run or not self.bot.api):
                 raise ValueError('无可执行时间或机器人未连接')
+            if action=='resume' and not db.execute('SELECT 1 FROM groups WHERE id=? AND disconnected=0 AND active=1',(row['group_id'],)).fetchone():
+                raise ValueError('目标社群已解除连接或机器人未授权')
             db.execute('UPDATE announcement_plans SET status=?,next_run=?,updated=? WHERE id=?',(status,next_run,datetime.now(TZ).isoformat(),pid))
         return {'ok':True}
 
@@ -311,7 +406,7 @@ class CommunityRuntime:
         at=at or datetime.now(TZ)
         with self.announcement_lock:
             with self.store.db() as db:
-                plans=[dict(r) for r in db.execute("SELECT * FROM announcement_plans WHERE status='scheduled' AND next_run<=? ORDER BY next_run LIMIT 20",(at.isoformat(),))]
+                plans=[dict(r) for r in db.execute("SELECT * FROM announcement_plans WHERE status='scheduled' AND next_run<=? AND "+visible_sql()+" ORDER BY next_run LIMIT 20",(at.isoformat(),))]
             for plan in plans:
                 due=plan['next_run']
                 following=next_time(plan,at) if plan['mode']=='daily' else None
@@ -361,3 +456,5 @@ class CommunityRuntime:
                 time.sleep(interval)
         threading.Thread(target=loop,args=(self.expire,1),daemon=True,name='group-verification-cleanup').start()
         threading.Thread(target=loop,args=(self.process_announcements,2),daemon=True,name='announcement-scheduler').start()
+        threading.Thread(target=loop,args=(self.probe_migrations,300),daemon=True,name='group-migration-repair').start()
+        threading.Thread(target=loop,args=(self.repair_referrals,30),daemon=True,name='invitation-credit-repair').start()

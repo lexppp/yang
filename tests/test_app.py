@@ -90,7 +90,7 @@ class CoreTests(unittest.TestCase):
         self.bot.handle(self.message('/ink'))
         self.bot.handle(self.message('/ink@TestBot'))
         self.assertEqual(sum(method=='createChatInviteLink' for method,_ in self.api.calls),1)
-        self.assertFalse(next(p for m,p in self.api.calls if m=='createChatInviteLink')['creates_join_request'])
+        self.assertTrue(next(p for m,p in self.api.calls if m=='createChatInviteLink')['creates_join_request'])
         replies=[p['text'] for method,p in self.api.calls if method=='sendMessage']
         self.assertEqual(len(replies),4)
         self.assertTrue(all('https://t.me/+test_invite' in text for text in replies))

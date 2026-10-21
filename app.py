@@ -23,6 +23,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from auth import Accounts, AccessDenied, PERMISSIONS, allowed, required_permissions, redact_snapshot
 from community_runtime import CommunityRuntime, initialize as initialize_community, snapshot as community_snapshot
+from group_links import initialize as initialize_links, resolve as resolve_group, migrate as migrate_group, visible_sql, disconnect as disconnect_group
 
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
@@ -104,6 +105,7 @@ class Store:
             db.execute('UPDATE groups SET welcome=? WHERE welcome=?',
                        (DEFAULT_WELCOME, DEFAULT_WELCOME.replace('/link', '/ink')))
             initialize_community(db)
+            initialize_links(db)
 
     @contextmanager
     def db(self):
@@ -122,9 +124,16 @@ class Store:
 
     def group(self, chat):
         with self.db() as db:
-            db.execute('INSERT INTO groups(id,title,welcome) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',
-                       (chat['id'], chat.get('title', str(chat['id'])), DEFAULT_WELCOME))
-            return dict(db.execute('SELECT * FROM groups WHERE id=?', (chat['id'],)).fetchone())
+            gid=resolve_group(db,chat['id'])
+            if gid!=chat['id']:
+                existing=db.execute('SELECT * FROM groups WHERE id=?',(gid,)).fetchone()
+                if existing:return dict(existing)
+            db.execute('INSERT INTO groups(id,title,welcome,chat_type) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,chat_type=CASE WHEN excluded.chat_type=\'\' THEN groups.chat_type ELSE excluded.chat_type END',
+                       (gid, chat.get('title', str(gid)), DEFAULT_WELCOME,chat.get('type','')))
+            return dict(db.execute('SELECT * FROM groups WHERE id=?', (gid,)).fetchone())
+
+    def migrate_group(self, old, new):
+        migrate_group(self,old,new)
 
     def member(self, gid, user, present=None):
         with self.db() as db:
@@ -156,30 +165,33 @@ class Store:
             points = db.execute('SELECT invite_points FROM groups WHERE id=?', (gid,)).fetchone()[0]
             db.execute('INSERT INTO ledger(group_id,user_id,points,kind,period,created) VALUES(?,?,?,?,?,?)',
                        (gid, inviter, points, 'invite', str(uid), now().isoformat()))
-            return True
+        self.event(gid,uid,'邀请入账',f'邀请人 {inviter}；+{points} 积分')
+        return True
 
     def snapshot(self, gid=None):
         with self.db() as db:
+            gid=resolve_group(db,gid) if gid is not None else None
             groups = [dict(r) for r in db.execute('''SELECT g.*,
               (SELECT COUNT(*) FROM members m WHERE m.group_id=g.id AND m.present=1) users,
               (SELECT COALESCE(SUM(points),0) FROM ledger l WHERE l.group_id=g.id) credits,
               (SELECT COUNT(*) FROM referrals r WHERE r.group_id=g.id) invites,
               (SELECT COUNT(*) FROM ledger l WHERE l.group_id=g.id AND kind='checkin' AND period=?) checkins
-              FROM groups g ORDER BY g.active DESC,g.title''', (now().date().isoformat(),))]
-            where, args = ('WHERE group_id=?', [gid]) if gid is not None else ('', [])
+              FROM groups g WHERE g.disconnected=0 AND g.id NOT IN (SELECT old_id FROM group_migrations) ORDER BY g.active DESC,g.title''', (now().date().isoformat(),))]
+            where, args = ('WHERE group_id=? AND '+visible_sql(), [gid]) if gid is not None else ('WHERE '+visible_sql(), [])
             month = now().strftime('%Y-%m')
             ranking = [dict(r) for r in db.execute(f'''SELECT l.group_id,l.user_id,
               COALESCE(m.name,CAST(l.user_id AS TEXT)) name,COALESCE(m.username,'') username,
               SUM(points) total,SUM(CASE WHEN substr(created,1,7)=? THEN points ELSE 0 END) monthly
               FROM ledger l LEFT JOIN members m ON l.group_id=m.group_id AND l.user_id=m.user_id
-              {'WHERE l.group_id=?' if gid is not None else ''}
+              WHERE {('l.group_id=? AND ' if gid is not None else '')+visible_sql('l.group_id')}
               GROUP BY l.group_id,l.user_id ORDER BY total DESC''', [month, *args])]
             invites = [dict(r) for r in db.execute(f'''SELECT i.*,COALESCE(m.name,CAST(i.user_id AS TEXT)) name,
               COALESCE(m.username,'') username,
               (SELECT COUNT(*) FROM referrals r WHERE r.group_id=i.group_id AND r.inviter_id=i.user_id) count
               FROM invites i LEFT JOIN members m ON m.group_id=i.group_id AND m.user_id=i.user_id
-              {'WHERE i.group_id=?' if gid is not None else ''} ORDER BY i.id DESC LIMIT 500''', args)]
-            logs = [dict(r) for r in db.execute(f'SELECT * FROM logs {where} ORDER BY id DESC LIMIT 100', args)]
+              WHERE {('i.group_id=? AND ' if gid is not None else '')+visible_sql('i.group_id')} ORDER BY i.id DESC LIMIT 500''', args)]
+            log_where=where if gid is not None else 'WHERE group_id IS NULL OR '+visible_sql()
+            logs = [dict(r) for r in db.execute(f'SELECT * FROM logs {log_where} ORDER BY id DESC LIMIT 100', args)]
             members = [dict(r) for r in db.execute(f'SELECT * FROM members {where} ORDER BY last_activity DESC LIMIT 500', args)]
             return dict(groups=groups, ranking=ranking, invites=invites, logs=logs, members=members,
                         **community_snapshot(db,gid),
@@ -188,7 +200,9 @@ class Store:
 
 
 class TelegramError(Exception):
-    pass
+    def __init__(self, message, parameters=None):
+        super().__init__(message)
+        self.parameters=parameters or {}
 
 
 class Telegram:
@@ -205,14 +219,16 @@ class Telegram:
         except urllib.error.HTTPError as e:
             # Never log request URLs; Telegram embeds the secret token in them.
             try:
-                description = json.loads(e.read()).get('description', 'Telegram request failed')
+                payload=json.loads(e.read())
+                description = payload.get('description', 'Telegram request failed')
             except (ValueError, OSError):
+                payload={}
                 description = 'Telegram request failed'
-            raise TelegramError(f'{method}: {description}') from None
+            raise TelegramError(f'{method}: {description}',payload.get('parameters')) from None
         except (urllib.error.URLError, TimeoutError):
             raise TelegramError(f'{method}: 网络连接失败') from None
         if not result.get('ok'):
-            raise TelegramError(f'{method}: {result.get("description", "请求失败")}')
+            raise TelegramError(f'{method}: {result.get("description", "请求失败")}',result.get('parameters'))
         return result['result']
 
 
@@ -229,12 +245,12 @@ class Bot:
 
     def invite(self, gid, user):
         with self.store.db() as db:
-            row = db.execute('SELECT * FROM invites WHERE group_id=? AND user_id=? AND active=1 ORDER BY id DESC LIMIT 1', (gid, user['id'])).fetchone()
+            row = db.execute('SELECT * FROM invites WHERE group_id=? AND user_id=? AND active=1 AND join_request=1 ORDER BY id DESC LIMIT 1', (gid, user['id'])).fetchone()
         if row:
             return row['url']
-        result = self.api.call('createChatInviteLink', chat_id=gid, name=f"u{user['id']}", creates_join_request=False)
+        result = self.api.call('createChatInviteLink', chat_id=gid, name=f"u{user['id']}", creates_join_request=True)
         with self.store.db() as db:
-            db.execute('INSERT INTO invites(group_id,user_id,url,created) VALUES(?,?,?,?)',
+            db.execute('INSERT INTO invites(group_id,user_id,url,created,join_request) VALUES(?,?,?,?,1)',
                        (gid, user['id'], result['invite_link'], now().isoformat()))
         return result['invite_link']
 
@@ -249,12 +265,12 @@ class Bot:
         elif text:
             self.send(group['id'], text)
 
-    def approve(self, gid, user, inviter):
+    def approve(self, gid, user, inviter, invite_url=None):
         self.api.call('approveChatJoinRequest', chat_id=gid, user_id=user['id'])
         with self.store.db() as db:
             group = dict(db.execute('SELECT * FROM groups WHERE id=?',(gid,)).fetchone())
             db.execute('DELETE FROM challenges WHERE group_id=? AND user_id=?',(gid,user['id']))
-        self.community.arrive(group,user,inviter=inviter)
+        self.community.arrive(group,user,inviter=inviter,invite_url=invite_url)
         self.store.event(gid,user['id'],'入群','已批准入群；启用验证时在群内完成后才奖励邀请积分')
 
     def join_request(self, request, group):
@@ -262,8 +278,9 @@ class Bot:
         if user.get('is_bot'):
             self.api.call('declineChatJoinRequest', chat_id=group['id'], user_id=user['id'])
             return
-        inviter = self.community.inviter(group['id'],request.get('invite_link',{}).get('invite_link'))
-        self.approve(group['id'],user,inviter)
+        link=request.get('invite_link',{}).get('invite_link')
+        inviter = self.community.inviter(group['id'],link)
+        self.approve(group['id'],user,inviter,link)
 
     def callback(self, cb):
         if cb.get('data','').startswith('v:'):
@@ -297,8 +314,16 @@ class Bot:
                 else:
                     self.send(chat['id'], 'Send coinw in a connected group to check in. Use /link in that group to get your personal invite link.\n\nTo set a welcome image, send me a photo here or reply to a photo with /fileid.')
             return
+        if item.get('migrate_to_chat_id'):
+            self.store.group(chat)
+            self.store.migrate_group(chat['id'],item['migrate_to_chat_id'])
+            return
+        if item.get('migrate_from_chat_id'):
+            self.store.migrate_group(item['migrate_from_chat_id'],chat['id'])
         group = self.store.group(chat)
-        gid = chat['id']
+        gid = group['id']
+        if group['disconnected']:
+            return
         if 'my_chat_member' in update:
             active = int(item['new_chat_member']['status'] == 'administrator')
             with self.store.db() as db:
@@ -316,8 +341,9 @@ class Bot:
             present = new['status'] in ('member', 'administrator', 'creator') or (new['status'] == 'restricted' and new.get('is_member'))
             was_present = old['status'] in ('member', 'administrator', 'creator') or (old['status'] == 'restricted' and old.get('is_member'))
             if present and not was_present:
-                inviter=self.community.inviter(gid,item.get('invite_link',{}).get('invite_link'))
-                self.community.arrive(group,user,item.get('date'),inviter)
+                link=item.get('invite_link',{}).get('invite_link')
+                inviter=self.community.inviter(gid,link)
+                self.community.arrive(group,user,item.get('date'),inviter,invite_url=link)
             elif not present:
                 self.community.leave(gid,user)
             else:
@@ -515,6 +541,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403, {'error':str(error)})
         if any(not allowed(session['user'],p) for p in required_permissions(path.path)):
             return self.respond(403, {'error':'无权执行此操作'})
+        if path.path == '/api/groups/disconnected':
+            with self.server.store.db() as db:
+                rows=[dict(r) for r in db.execute('SELECT id,title,chat_type FROM groups WHERE disconnected=1 AND id NOT IN (SELECT old_id FROM group_migrations) ORDER BY title')]
+            return self.respond(200,{'groups':rows})
         if path.path not in ('/api/snapshot', '/api/export'):
             return self.respond(404, {'error':'接口不存在'})
         try:
@@ -575,6 +605,37 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200, {'ok':True}, headers={'Set-Cookie':'session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0'})
             if any(not allowed(session['user'],p) for p in required_permissions(self.path,data)):
                 return self.respond(403, {'error':'无权执行此操作'})
+            if self.path == '/api/invites/attribute':
+                return self.respond(200,self.server.bot.community.manual_attribution(data,session['user']))
+            if self.path == '/api/groups/disconnect':
+                if type(data.get('leave',False)) is not bool:
+                    raise ValueError('退出群选项无效')
+                gid=int(data['group_id'])
+                runtime=self.server.bot.community
+                with runtime.member_lock,runtime.announcement_lock:
+                    with self.server.store.db() as db:
+                        gid=resolve_group(db,gid)
+                        if not db.execute('SELECT 1 FROM groups WHERE id=? AND disconnected=0',(gid,)).fetchone():
+                            raise ValueError('社群不存在或已经解除连接')
+                    if data.get('leave'):
+                        if not self.server.bot.api:raise ValueError('机器人未连接，无法退出真实社群')
+                        self.server.bot.api.call('leaveChat',chat_id=gid)
+                    disconnect_group(self.server.store,gid)
+                self.server.store.event(gid,None,'解除社群连接',session['user']['username']+' 解除连接'+('，机器人已退出群' if data.get('leave') else '，机器人群内身份保留'))
+                return self.respond(200,{'ok':True})
+            if self.path == '/api/groups/restore':
+                gid=int(data['group_id'])
+                with self.server.store.db() as db:
+                    if resolve_group(db,gid)!=gid:raise ValueError('此群已升级，请使用升级后的社群')
+                    if not db.execute('SELECT 1 FROM groups WHERE id=? AND disconnected=1',(gid,)).fetchone():raise ValueError('社群不是已解除状态')
+                if not self.server.demo:
+                    if not self.server.bot.api:raise ValueError('机器人尚未连接')
+                    identity=self.server.bot.identity or self.server.bot.api.call('getMe')
+                    member=self.server.bot.api.call('getChatMember',chat_id=gid,user_id=identity['id'])
+                    if member['status'] not in ('administrator','creator'):raise ValueError('请先将机器人加入该群并授予管理员权限')
+                with self.server.store.db() as db:db.execute('UPDATE groups SET disconnected=0,active=1 WHERE id=?',(gid,))
+                self.server.store.event(gid,None,'恢复社群连接',session['user']['username']+' 恢复连接；公告任务保持暂停，需手动启用')
+                return self.respond(200,{'ok':True})
             if self.path.startswith('/api/admins/') or self.path == '/api/account/password':
                 actor=session['user']
                 if self.path == '/api/admins/create':
@@ -617,7 +678,7 @@ class Handler(BaseHTTPRequestHandler):
                 if 'language' in changes and changes['language'] != 'en':
                     raise ValueError('机器人对外文案仅提供英文')
                 with self.server.store.db() as db:
-                    result = db.execute('UPDATE groups SET '+','.join(k+'=?' for k in changes)+' WHERE id=?', [*changes.values(), gid])
+                    result = db.execute('UPDATE groups SET '+','.join(k+'=?' for k in changes)+' WHERE id=? AND disconnected=0', [*changes.values(), gid])
                     if not result.rowcount:
                         raise ValueError('社群不存在')
                 self.server.store.event(gid, None, '设置更新', '管理员更新了社群规则')
@@ -640,7 +701,7 @@ class Handler(BaseHTTPRequestHandler):
         except AccessDenied as error:
             self.respond(403, {'error':str(error)})
         except (ValueError, KeyError, TypeError) as error:
-            message = str(error) if isinstance(error,ValueError) and (self.path.startswith('/api/admins/') or self.path == '/api/account/password' or self.path.startswith('/api/announcements/')) else '输入无效，请检查字段、积分范围和图片地址'
+            message = str(error) if isinstance(error,ValueError) and (self.path.startswith(('/api/admins/','/api/announcements/','/api/groups/','/api/invites/')) or self.path == '/api/account/password') else '输入无效，请检查字段、积分范围和图片地址'
             self.respond(400, {'error':message})
         except TelegramError as e:
             self.respond(502, {'error':str(e)})

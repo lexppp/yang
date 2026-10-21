@@ -6,7 +6,7 @@ import tarfile
 root = Path(__file__).resolve().parents[1]
 destination = root/'data/downloads/CoinW-server-demo.tar.gz'
 destination.parent.mkdir(parents=True, exist_ok=True)
-files = [root/'app.py', root/'auth.py', root/'community_runtime.py', root/'frontend/hosted.html',
+files = [root/'app.py', root/'auth.py', root/'community_runtime.py', root/'group_links.py', root/'frontend/hosted.html',
          *sorted((root/'static').glob('*')),
          *[root/'deploy'/name for name in ('README.md','install.sh','coinw.service','Caddyfile.example')]]
 with tarfile.open(destination, 'w:gz') as archive:

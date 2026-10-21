@@ -18,12 +18,14 @@ async function enter(session){currentUser=session.user;csrf=session.csrf;$('#log
 async function refresh(){
   if(loading||!csrf)return;loading=true;$('#refresh').disabled=true;
   try{data=await api('/api/snapshot'+(group?'?group='+encodeURIComponent(group):''));currentUser=data.current_user||currentUser;
+    if(group&&!data.groups.some(g=>String(g.id)===group)){group='';data=await api('/api/snapshot');}
+    if($('#manage-disconnected'))$('#manage-disconnected').hidden=!!window.previewActions||!accessAllowed(currentUser,'groups.disconnect');
     $('#demo-banner').hidden=!data.demo;$('#bot-status').textContent=data.bot_status;
     $('#nav-count').textContent=data.groups.length;
     $('#today').textContent=new Date().toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',year:'numeric',month:'long',day:'numeric'});
     $('#synced').textContent='· '+date(data.server_time);
     const select=$('#group-filter');
-    select.innerHTML='<option value="">全部社群</option>'+data.groups.map(g=>`<option value="${g.id}">${esc(g.title)}</option>`).join('');select.value=group;
+    select.innerHTML='<option value="">全部社群</option>'+data.groups.map(g=>`<option value="${g.id}">${esc(g.title)} · ${g.id}</option>`).join('');select.value=group;
     render();
   }catch(e){toast(e.message);}finally{loading=false;$('#refresh').disabled=false;}
 }
@@ -38,7 +40,7 @@ function stats(){
 }
 function groupsPanel(){
  const gs=selectedGroups();const max=Math.max(1,...gs.map(g=>g.messages));
- const rows=gs.map(g=>`<tr><td><div class="group-cell"><span class="group-avatar">${esc(g.title.slice(0,1))}</span><div><b>${esc(g.title)}</b><small>${g.id}</small></div></div></td><td><span class="badge ${g.active?'':'off'}">${g.active?'已连接':'待授权'}</span></td><td>${num(g.users)}</td><td>${num(g.messages)}<progress class="progress" value="${g.messages}" max="${max}" aria-label="消息活跃度"></progress></td><td class="purple">${num(g.credits)}</td><td>${date(g.last_activity)}</td><td><button class="text-button" data-view="${g.id}">查看 ↗</button><button class="text-button" data-settings="${g.id}">设置</button></td></tr>`);
+ const rows=gs.map(g=>`<tr><td><div class="group-cell"><span class="group-avatar">${esc(g.title.slice(0,1))}</span><div><b>${esc(g.title)}</b><small>${g.id}</small></div></div></td><td><span class="badge ${g.active?'':'off'}">${g.active?'已连接':'待授权'}</span></td><td>${num(g.users)}</td><td>${num(g.messages)}<progress class="progress" value="${g.messages}" max="${max}" aria-label="消息活跃度"></progress></td><td class="purple">${num(g.credits)}</td><td>${date(g.last_activity)}</td><td><button class="text-button" data-view="${g.id}">查看 ↗</button><button class="text-button" data-settings="${g.id}">设置</button>${!window.previewActions&&accessAllowed(currentUser,'groups.disconnect')?`<button class="text-button negative" data-disconnect-group="${g.id}">解除连接</button>`:''}</td></tr>`);
  return panel('▦ 社群概览','规则、活跃与积分，在同一处掌握。',table(['社群名称','状态','已记录成员','累计消息','总积分','最近活跃','操作'],rows)+`<div class="table-foot"><span>共 ${gs.length} 个社群 · ${gs.filter(g=>g.active).length} 个已连接</span><span>由机器人事件自动同步</span></div>`,'<span class="tag">COMMUNITIES</span>');
 }
 function overview(){
@@ -54,7 +56,16 @@ function ranking(){
  return stats()+`<div class="rank-grid">${rank('monthly','◫ 本月排行榜',data.month+' · 每个自然月独立统计')}${rank('total','♜ 累计排行榜','保留所有签到与有效邀请积分')}</div>`;
 }
 function invites(){
- return stats()+panel('↗ 邀请链接','成员在群内发送 /link 即可生成自己的专属链接。',`<div class="toolbar"><input id="invite-search" placeholder="搜索用户、用户名或邀请链接" aria-label="搜索邀请"><select id="invite-status" aria-label="邀请状态"><option value="">全部状态</option><option value="1">有效链接</option><option value="0">已撤销</option></select><span class="tag">${data.invites.length} 条链接</span></div><div id="invite-results"></div>`,'<a class="button" href="/api/export'+(group?'?group='+encodeURIComponent(group):'')+'">↓ 导出积分 CSV</a>');
+ return stats()+panel('↗ 邀请链接','成员在群内发送 /link 获取个人链接。新版链接由机器人自动批准入群，验证仍在群内进行。',`<div class="toolbar"><input id="invite-search" placeholder="搜索用户、用户名或邀请链接" aria-label="搜索邀请"><select id="invite-status" aria-label="邀请状态"><option value="">全部状态</option><option value="1">有效链接</option><option value="0">已撤销</option></select><span class="tag">${data.invites.length} 条链接</span></div><div id="invite-results"></div>`,'<a class="button" href="/api/export'+(group?'?group='+encodeURIComponent(group):'')+'">↓ 导出积分 CSV</a>')+invitationDiagnostics();
+}
+function invitationDiagnostics(){
+ if(window.previewActions)return '';
+ const statuses={pending:'待验证',verified:'已验证',not_required:'无需验证',timed_out:'验证超时',error:'验证权限错误',left:'已离群',disconnected:'连接已解除'};
+ return panel('≡ 入群与邀请归因','只点击链接不会计数；验证开启时通过后入账。来源缺失的旧记录需核实后补记，不会自动猜测邀请人。',table(['入群成员 / 社群','入群时间','验证状态','邀请归因','操作'],(data.joins||[]).map(j=>{
+  const missing=j.inviter_id===null&&['verified','not_required'].includes(j.status)&&!j.counted;
+  const attribution=j.counted?'已计入首次有效邀请':j.inviter_id===j.user_id?'自邀不计':j.inviter_id!==null?(j.status==='pending'?'已关联，等待验证':'已关联，尚未入账'):'来源缺失';
+  return `<tr><td><b>${esc(j.name)}</b><small>UID ${j.user_id} · ${esc(data.groups.find(g=>g.id===j.group_id)?.title||j.group_id)}</small></td><td>${date(j.joined_at*1000)}</td><td>${statuses[j.status]||esc(j.status)}</td><td>${attribution}${j.counted?`<small>首次邀请人 UID ${j.credited_inviter_id}</small>`:j.inviter_id!==null?`<small>邀请人 UID ${j.inviter_id}</small>`:''}</td><td>${missing&&accessAllowed(currentUser,'invites.attribute')?`<button class="text-button" data-attribute-invite="${j.group_id}:${j.user_id}">补记归因</button>`:'—'}</td></tr>`;
+ })));
 }
 function drawInvites(){
  const query=($('#invite-search')?.value||'').toLowerCase(),status=$('#invite-status')?.value;
@@ -76,6 +87,10 @@ function render(){
  if($('#countdown')){const tick=()=>{let seconds=Math.max(0,Math.floor((new Date(data.next_reset)-Date.now())/1000));$('#countdown').textContent=[Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v=>String(v).padStart(2,'0')).join(':');$('#reset-date').textContent=new Date(data.next_reset).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit'})+' 00:00';};tick();countdownTimer=setInterval(tick,1000);}
 }
 function openSettings(id){const g=data.groups.find(g=>g.id===Number(id));if(!g)return;const f=$('#settings-form');$('#settings-title').textContent=g.title;$('#settings-error').textContent='';for(const el of f.elements){if(!el.name)continue;if(el.type==='checkbox')el.checked=!!g[el.name];else el.value=el.name==='group_id'?g.id:el.name==='verify_minutes'?(g.verify_minutes||4):g[el.name];}$('#settings-dialog').showModal();}
+async function loadDisconnected(){
+ const result=await api('/api/groups/disconnected');
+ $('#disconnected-results').innerHTML=table(['社群','群 ID','操作'],result.groups.map(g=>`<tr><td>${esc(g.title)}</td><td>${g.id}</td><td><button type="button" class="text-button" data-restore-group="${g.id}">恢复连接</button></td></tr>`));
+}
 function navigate(target){page=target;location.hash=target;if(data)render();}
 document.addEventListener('click',async e=>{
  const el=e.target.closest('button,a');if(!el)return;
@@ -84,6 +99,19 @@ document.addEventListener('click',async e=>{
  if(el.dataset.view){group=el.dataset.view;page='groups';location.hash=page;await refresh();}
  if(el.dataset.copy){const r=data.invites.find(r=>r.id===Number(el.dataset.copy));try{await navigator.clipboard.writeText(r.url);toast('邀请链接已复制');}catch{toast('复制受浏览器限制，请手动选择链接');}}
  if(el.dataset.revoke){if(!confirm('撤销此邀请链接？已邀请人数和历史积分将保留。'))return;el.disabled=true;try{await api('/api/revoke',{id:Number(el.dataset.revoke)});toast('链接已撤销');await refresh();}catch(err){toast(err.message);el.disabled=false;}}
+ if(el.dataset.disconnectGroup){const g=data.groups.find(g=>g.id===Number(el.dataset.disconnectGroup));if(!g)return;$('#disconnect-form').reset();$('#disconnect-form [name=group_id]').value=g.id;$('#disconnect-target').textContent=g.title+' · '+g.id;$('#disconnect-error').textContent='';$('#disconnect-dialog').showModal();}
+ if(el.id==='manage-disconnected'){try{await loadDisconnected();$('#disconnected-dialog').showModal();}catch(error){toast(error.message);}}
+ if(el.hasAttribute('data-close-connection')){e.preventDefault();el.closest('dialog').close();}
+ if(el.dataset.restoreGroup){el.disabled=true;try{await api('/api/groups/restore',{group_id:Number(el.dataset.restoreGroup)});await loadDisconnected();await refresh();toast('社群连接已恢复；需要的公告计划请手动启用');}catch(error){toast(error.message);}finally{el.disabled=false;}}
+ if(el.dataset.attributeInvite){const [gid,uid]=el.dataset.attributeInvite.split(':').map(Number),f=$('#attribute-form');f.reset();f.elements.group_id.value=gid;f.elements.user_id.value=uid;const choices=[...new Map(data.invites.filter(i=>i.group_id===gid&&i.user_id!==uid).map(i=>[i.user_id,i])).values()];f.elements.invite_id.innerHTML='<option value="">请选择真实邀请人</option>'+choices.map(i=>`<option value="${i.id}">${esc(i.name)} · UID ${i.user_id}</option>`).join('');$('#attribute-target').textContent='入群成员 UID '+uid+' · 社群 '+gid;$('#attribute-error').textContent=choices.length?'':'请让邀请人先在该群发送 /link，生成可核实的个人链接';$('#attribute-dialog').showModal();}
+});
+$('#disconnect-form')?.addEventListener('submit',async e=>{
+ e.preventDefault();const f=e.target,b=e.submitter||f.querySelector('[type=submit]');b.disabled=true;$('#disconnect-error').textContent='';
+ try{const gid=Number(f.elements.group_id.value);await api('/api/groups/disconnect',{group_id:gid,leave:f.elements.leave.checked});$('#disconnect-dialog').close();if(group===String(gid))group='';page='groups';location.hash='groups';await refresh();toast('已解除连接，历史数据保留；可在“已解除社群”中恢复');}catch(error){$('#disconnect-error').textContent=error.message;}finally{b.disabled=false;}
+});
+$('#attribute-form')?.addEventListener('submit',async e=>{
+ e.preventDefault();const f=e.target,b=e.submitter||f.querySelector('[type=submit]');b.disabled=true;$('#attribute-error').textContent='';
+ try{await api('/api/invites/attribute',{group_id:Number(f.elements.group_id.value),user_id:Number(f.elements.user_id.value),invite_id:Number(f.elements.invite_id.value),reason:f.elements.reason.value.trim()});$('#attribute-dialog').close();await refresh();toast('已补记归因和邀请奖励，核实依据已记录');}catch(error){$('#attribute-error').textContent=error.message;}finally{b.disabled=false;}
 });
 $('#login-form').addEventListener('submit',async e=>{
  e.preventDefault();const form=e.currentTarget,button=e.submitter||form.querySelector('button[type="submit"]');
