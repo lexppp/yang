@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Update /link support in an existing server installation; preserve config and data."""
+"""Update invitation and photo ID commands; preserve server config and business data."""
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -12,8 +12,8 @@ import tempfile
 import time
 import urllib.request
 
-SOURCE_REVISION = 'b5e27ab4219b9a95cbe17a651984eca1e5bbab68'
-FILES = {'app.py': '721c71d6ab7cac5043fdccbb88edfec6a318d6e1842cccba086b58181abc9abc', 'static/app.js': '6f898d30329dcdd1d9e34bc6edc705ab0b2f9b2a603016862ddc7914317739dc'}
+SOURCE_REVISION = '7f0305c64e0a8ddf801ca4aca4462cc29e83f049'
+FILES = {'app.py': '2a75df79ff82e8fa4871ecbe640accf7d09edc999dada8c5c7a844562d633516', 'static/app.js': '6f898d30329dcdd1d9e34bc6edc705ab0b2f9b2a603016862ddc7914317739dc'}
 
 
 def fetch_verified(relative, expected):
@@ -45,7 +45,7 @@ def main():
         raise ValueError('This updater has not been prepared for release.')
     if any(not (root/name).is_file() for name in FILES):
         raise ValueError('Existing CoinW installation was not found.')
-    print('Downloading and verifying /link update. Account, Token and point settings are preserved.')
+    print('Downloading and verifying /link and /fileid update. Account, Token and point settings are preserved.')
     content = {name:fetch_verified(name,checksum) for name,checksum in FILES.items()}
     compile(content['app.py'], 'app.py', 'exec')
     stamp = datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S-%f')
@@ -79,6 +79,7 @@ def main():
         raise
     print('Update installed. Core service passed the local health check.')
     print('In your TEST group send /link. /ink remains a compatible alias using the same invite link.')
+    print('In PRIVATE chat, send the bot a photo or reply to a photo with /fileid. Copy its ID into Welcome image.')
     print('Refresh https://panel.chloehub.top. Existing custom welcome text is preserved.')
 
 
