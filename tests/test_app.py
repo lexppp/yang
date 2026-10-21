@@ -103,6 +103,43 @@ class CoreTests(unittest.TestCase):
         self.assertIn('/link',values[-1001])
         self.assertEqual(values[custom_id],'My custom welcome: /ink')
 
+    def private_message(self, **fields):
+        return {'message':dict(chat={'id':1,'type':'private'},message_id=27,**{'from':self.user},**fields)}
+
+    def test_private_photo_returns_largest_photo_id_without_downloading(self):
+        self.bot.handle(self.private_message(photo=[
+            {'file_id':'large_photo_fixture','width':1280,'height':960},
+            {'file_id':'small_photo_fixture','width':90,'height':67}]))
+        self.assertEqual(len(self.api.calls),1)
+        method,params=self.api.calls[0]
+        self.assertEqual(method,'sendMessage')
+        self.assertIn('\nlarge_photo_fixture\n',params['text'])
+        self.assertNotIn('small_photo_fixture',params['text'])
+        self.assertTrue(is_english_text(params['text']))
+        self.assertEqual(self.store.snapshot()['ranking'],[])
+
+    def test_private_fileid_reply_and_caption_return_photo_id(self):
+        self.bot.handle(self.private_message(text='/fileid@TestBot',reply_to_message={
+            'photo':[{'file_id':'replied_photo_fixture','width':800,'height':600}]}))
+        self.bot.handle(self.private_message(caption='/fileid',photo=[
+            {'file_id':'caption_photo_fixture','width':800,'height':600}]))
+        texts=[p['text'] for method,p in self.api.calls if method=='sendMessage']
+        self.assertIn('replied_photo_fixture',texts[0])
+        self.assertIn('caption_photo_fixture',texts[1])
+
+    def test_fileid_without_photo_or_with_image_document_shows_instructions(self):
+        self.bot.handle(self.private_message(text='/fileid'))
+        self.bot.handle(self.private_message(document={'mime_type':'image/png','file_id':'document_not_photo_fixture'}))
+        texts=[p['text'] for method,p in self.api.calls if method=='sendMessage']
+        self.assertEqual(len(texts),2)
+        self.assertTrue(all('rather than sending it as a file' in text for text in texts))
+        self.assertTrue(all(is_english_text(text) for text in texts))
+        self.assertTrue(all('document_not_photo_fixture' not in text for text in texts))
+
+    def test_group_photo_does_not_echo_file_id(self):
+        self.bot.handle(self.message('',photo=[{'file_id':'private_media_fixture','width':800,'height':600}]))
+        self.assertFalse(any(method=='sendMessage' for method,_ in self.api.calls))
+
     def test_link_caption_hidden_entity_and_photo_file(self):
         self.assertEqual(moderation_reason(self.group,{'caption':'https://evil.com'}),'包含链接')
         self.assertEqual(moderation_reason(self.group,{'text':'click','entities':[{'type':'text_link','url':'https://evil.com'}]}),'包含链接')

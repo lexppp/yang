@@ -316,7 +316,19 @@ class Bot:
         chat = item['chat']
         if chat['type'] not in ('group', 'supergroup'):
             if 'message' in update:
-                self.send(chat['id'], 'Send coinw in a connected group to check in. Use /link to get your personal invite link for that group.')
+                command = re.fullmatch(r'/fileid(?:@[A-Za-z0-9_]+)?', item.get('text', item.get('caption', '')).strip(), re.I)
+                photo_message = item if item.get('photo') else item.get('reply_to_message', {}) if command else {}
+                photos = photo_message.get('photo', [])
+                if photos:
+                    # A Telegram photo has several sizes. Reuse the highest resolution photo ID.
+                    photo = max(photos, key=lambda p: (p.get('width',0)*p.get('height',0), p.get('file_size',0)))
+                    self.send(chat['id'], 'Photo file_id:\n'+photo['file_id']+'\n\nCopy only the file_id into the Welcome image field in your dashboard. This ID works with this bot.',
+                              reply_parameters={'message_id':item['message_id']})
+                elif command or item.get('document', {}).get('mime_type','').startswith('image/'):
+                    self.send(chat['id'], 'Send me the image as a photo, or reply to a photo with /fileid. Choose the Photo option rather than sending it as a file.',
+                              reply_parameters={'message_id':item['message_id']})
+                else:
+                    self.send(chat['id'], 'Send coinw in a connected group to check in. Use /link in that group to get your personal invite link.\n\nTo set a welcome image, send me a photo here or reply to a photo with /fileid.')
             return
         group = self.store.group(chat)
         gid = chat['id']

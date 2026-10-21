@@ -18,6 +18,7 @@
 
 ```text
 link - Get your personal invite link
+fileid - Get a welcome photo ID in private chat
 start - Show check-in and invitation help
 ```
 
@@ -83,3 +84,15 @@ sudo python3 update_link.py
 
 更新后在群内发送 /link 测试。需要在 Telegram 菜单显示它时，在官方 BotFather 的
 /setcommands 中把邀请项设为 `link - Get your personal invite link`。
+
+## 获取欢迎图片的 file_id
+
+安装当前更新后，在 Telegram 私聊自己的机器人，点击 Start，并按「照片」方式发送图片。
+机器人会用英文返回 `Photo file_id:` 和对应标识；也可以回复照片发送 `/fileid`。
+复制标识本身，填入看板「社群管理 → 设置 → 欢迎图片」，保存设置。
+无需下载 Telegram 文件，不需要 Token 或额外图床。
+以「文件」方式发送的图片不适用于这个 sendPhoto 欢迎图字段，机器人会提示改为照片发送。
+群内照片不会自动回显 file_id。图片中的语言仍须运营者自行检查。
+
+已部署服务器可再次下载并执行上面的 update_link.py 更新器；当前更新同时包含 /link 和 /fileid。
+它保留账号、Token 与现有积分/邀请数据，短暂重启 coinw 服务。
