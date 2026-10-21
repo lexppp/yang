@@ -54,7 +54,7 @@ function ranking(){
  return stats()+`<div class="rank-grid">${rank('monthly','◫ 本月排行榜',data.month+' · 每个自然月独立统计')}${rank('total','♜ 累计排行榜','保留所有签到与有效邀请积分')}</div>`;
 }
 function invites(){
- return stats()+panel('↗ 邀请链接','成员在群内发送 /ink 即可生成自己的专属链接。',`<div class="toolbar"><input id="invite-search" placeholder="搜索用户、用户名或邀请链接" aria-label="搜索邀请"><select id="invite-status" aria-label="邀请状态"><option value="">全部状态</option><option value="1">有效链接</option><option value="0">已撤销</option></select><span class="tag">${data.invites.length} 条链接</span></div><div id="invite-results"></div>`,'<a class="button" href="/api/export'+(group?'?group='+encodeURIComponent(group):'')+'">↓ 导出积分 CSV</a>');
+ return stats()+panel('↗ 邀请链接','成员在群内发送 /link 即可生成自己的专属链接。',`<div class="toolbar"><input id="invite-search" placeholder="搜索用户、用户名或邀请链接" aria-label="搜索邀请"><select id="invite-status" aria-label="邀请状态"><option value="">全部状态</option><option value="1">有效链接</option><option value="0">已撤销</option></select><span class="tag">${data.invites.length} 条链接</span></div><div id="invite-results"></div>`,'<a class="button" href="/api/export'+(group?'?group='+encodeURIComponent(group):'')+'">↓ 导出积分 CSV</a>');
 }
 function drawInvites(){
  const query=($('#invite-search')?.value||'').toLowerCase(),status=$('#invite-status')?.value;

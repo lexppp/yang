@@ -80,11 +80,28 @@ class CoreTests(unittest.TestCase):
         self.assertIn('earned 5',messages[0])
         self.assertIn('already checked in',messages[1])
 
-    def test_ink_reuses_link(self):
+    def test_link_and_legacy_ink_reuse_same_link(self):
+        self.bot.handle(self.message('/link'))
+        self.bot.handle(self.message('/link@TestBot'))
         self.bot.handle(self.message('/ink'))
         self.bot.handle(self.message('/ink@TestBot'))
         self.assertEqual(sum(method=='createChatInviteLink' for method,_ in self.api.calls),1)
         self.assertTrue(next(p for m,p in self.api.calls if m=='createChatInviteLink')['creates_join_request'])
+        replies=[p['text'] for method,p in self.api.calls if method=='sendMessage']
+        self.assertEqual(len(replies),4)
+        self.assertTrue(all('https://t.me/+test_invite' in text for text in replies))
+
+    def test_old_default_welcome_migrates_but_custom_text_is_preserved(self):
+        custom_id=-1002
+        self.store.group({'id':custom_id,'title':'Custom group'})
+        with self.store.db() as db:
+            db.execute("UPDATE groups SET welcome=? WHERE id=-1001",('Welcome, {name}, to {group}! Send coinw to check in and /ink to get your invite link.',))
+            db.execute('UPDATE groups SET welcome=? WHERE id=?',('My custom welcome: /ink',custom_id))
+        reopened=Store(self.store.path)
+        with reopened.db() as db:
+            values={r['id']:r['welcome'] for r in db.execute('SELECT id,welcome FROM groups')}
+        self.assertIn('/link',values[-1001])
+        self.assertEqual(values[custom_id],'My custom welcome: /ink')
 
     def test_link_caption_hidden_entity_and_photo_file(self):
         self.assertEqual(moderation_reason(self.group,{'caption':'https://evil.com'}),'包含链接')

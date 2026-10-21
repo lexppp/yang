@@ -26,6 +26,7 @@ from auth import Accounts, AccessDenied, PERMISSIONS, allowed, required_permissi
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
 log = logging.getLogger('community')
+DEFAULT_WELCOME = 'Welcome, {name}, to {group}! Send coinw to check in and /link to get your invite link.'
 
 
 def load_env():
@@ -70,7 +71,7 @@ class Store:
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS groups(
               id INTEGER PRIMARY KEY, title TEXT NOT NULL, active INTEGER NOT NULL DEFAULT 1,
-              welcome TEXT NOT NULL DEFAULT 'Welcome, {name}, to {group}! Send coinw to check in and /ink to get your invite link.', welcome_photo TEXT NOT NULL DEFAULT '',
+              welcome TEXT NOT NULL DEFAULT 'Welcome, {name}, to {group}! Send coinw to check in and /link to get your invite link.', welcome_photo TEXT NOT NULL DEFAULT '',
               block_links INTEGER NOT NULL DEFAULT 1, block_photos INTEGER NOT NULL DEFAULT 0,
               block_ads INTEGER NOT NULL DEFAULT 1, keywords TEXT NOT NULL DEFAULT '代投,稳赚,刷单',
               verify INTEGER NOT NULL DEFAULT 1, checkin_points INTEGER NOT NULL DEFAULT 5,
@@ -98,6 +99,9 @@ class Store:
               id INTEGER PRIMARY KEY, group_id INTEGER, user_id INTEGER, kind TEXT, detail TEXT, created TEXT);
             CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY,value TEXT);
             ''')
+            # Update only the former built-in template. Preserve administrators' custom text.
+            db.execute('UPDATE groups SET welcome=? WHERE welcome=?',
+                       (DEFAULT_WELCOME, DEFAULT_WELCOME.replace('/link', '/ink')))
 
     @contextmanager
     def db(self):
@@ -116,8 +120,8 @@ class Store:
 
     def group(self, chat):
         with self.db() as db:
-            db.execute('INSERT INTO groups(id,title) VALUES(?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',
-                       (chat['id'], chat.get('title', str(chat['id']))))
+            db.execute('INSERT INTO groups(id,title,welcome) VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title',
+                       (chat['id'], chat.get('title', str(chat['id'])), DEFAULT_WELCOME))
             return dict(db.execute('SELECT * FROM groups WHERE id=?', (chat['id'],)).fetchone())
 
     def member(self, gid, user, present=None):
@@ -312,7 +316,7 @@ class Bot:
         chat = item['chat']
         if chat['type'] not in ('group', 'supergroup'):
             if 'message' in update:
-                self.send(chat['id'], 'Send coinw in a connected group to check in. Use /ink to get your personal invite link for that group.')
+                self.send(chat['id'], 'Send coinw in a connected group to check in. Use /link to get your personal invite link for that group.')
             return
         group = self.store.group(chat)
         gid = chat['id']
@@ -360,7 +364,7 @@ class Bot:
             self.send(gid, reply+'\n⏰ Next check-in: 00:00 (UTC+8)', reply_parameters={'message_id': item['message_id']})
             if points is not None:
                 self.store.event(gid, user['id'], '签到', f'+{points} 积分')
-        elif re.fullmatch(r'/ink(?:@[A-Za-z0-9_]+)?', text.strip(), re.I):
+        elif re.fullmatch(r'/(?:link|ink)(?:@[A-Za-z0-9_]+)?', text.strip(), re.I):
             link = self.invite(gid, user)
             with self.store.db() as db:
                 count = db.execute('SELECT COUNT(*) FROM referrals WHERE group_id=? AND inviter_id=?', (gid, user['id'])).fetchone()[0]
