@@ -67,3 +67,19 @@ sudo python3 connect_telegram.py
 出现已有 Webhook 或409冲突，先确定原部署的用途与停止方案，再切换；不要自动删除或强占。
 
 邀请命令以 /link 为准，/ink 保留为兼容别名，两者复用同一用户的有效邀请链接。
+
+## 已部署服务器更新 /link
+
+在腾讯云终端执行下面整段。无需重新输入 Token 或管理员密码。
+更新器仅替换 app.py 与 static/app.js，先校验固定版本 SHA256 并备份旧代码；
+服务启动检查失败时恢复旧代码。已有账号、Token、签到和邀请数据保留。
+原内置欢迎词中的 /ink 会改为 /link，管理员自定义的欢迎词保持原样。
+
+```bash
+cd /home/ubuntu &&
+curl -fL --retry 3 https://raw.githubusercontent.com/lexppp/yang/refs/heads/deploy/hosted-demo/deploy/update_link.py -o update_link.py &&
+sudo python3 update_link.py
+```
+
+更新后在群内发送 /link 测试。需要在 Telegram 菜单显示它时，在官方 BotFather 的
+/setcommands 中把邀请项设为 `link - Get your personal invite link`。
