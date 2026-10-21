@@ -75,7 +75,7 @@ function render(){
  if(page==='invites'&&data.groups.length){drawInvites();$('#invite-search').addEventListener('input',drawInvites);$('#invite-status').addEventListener('change',drawInvites);}
  if($('#countdown')){const tick=()=>{let seconds=Math.max(0,Math.floor((new Date(data.next_reset)-Date.now())/1000));$('#countdown').textContent=[Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v=>String(v).padStart(2,'0')).join(':');$('#reset-date').textContent=new Date(data.next_reset).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit'})+' 00:00';};tick();countdownTimer=setInterval(tick,1000);}
 }
-function openSettings(id){const g=data.groups.find(g=>g.id===Number(id));if(!g)return;const f=$('#settings-form');$('#settings-title').textContent=g.title;$('#settings-error').textContent='';for(const el of f.elements){if(!el.name)continue;if(el.type==='checkbox')el.checked=!!g[el.name];else el.value=el.name==='group_id'?g.id:g[el.name];}$('#settings-dialog').showModal();}
+function openSettings(id){const g=data.groups.find(g=>g.id===Number(id));if(!g)return;const f=$('#settings-form');$('#settings-title').textContent=g.title;$('#settings-error').textContent='';for(const el of f.elements){if(!el.name)continue;if(el.type==='checkbox')el.checked=!!g[el.name];else el.value=el.name==='group_id'?g.id:el.name==='verify_minutes'?(g.verify_minutes||4):g[el.name];}$('#settings-dialog').showModal();}
 function navigate(target){page=target;location.hash=target;if(data)render();}
 document.addEventListener('click',async e=>{
  const el=e.target.closest('button,a');if(!el)return;
@@ -107,4 +107,4 @@ $('#logout').onclick=logout;$('#logout-mobile').onclick=logout;
 window.addEventListener('hashchange',()=>{const next=location.hash.slice(1);if(pages[next]&&next!==page){page=next;if(data)render();}});
 page=pages[location.hash.slice(1)]?location.hash.slice(1):'overview';
 api('/api/session').then(enter).catch(showLogin);
-setInterval(()=>{if(csrf&&!document.hidden&&!$('#settings-dialog').open&&!$('#invite-search')?.value)refresh();},15000);
+setInterval(()=>{if(csrf&&!document.hidden&&!$('#settings-dialog').open&&!$('#invite-search')?.value&&!document.querySelector('#live-announcement-form:focus-within'))refresh();},15000);

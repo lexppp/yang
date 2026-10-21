@@ -21,7 +21,7 @@ script = script.replace('总积分','本月积分')
 html = html.replace('<head>', '<head><link rel="icon" href="data:,">')
 html = html.replace('<title>CoinW · Community OS</title>', '<title>CoinW 社群管理 · 前端交互预览</title>')
 html = html.replace('<link rel="stylesheet" href="/style.css">', '<style>'+style+'</style>')
-for name in ['access-policy.js','app.js','access.js']:
+for name in ['access-policy.js','app.js','access.js','live-announcements.js']:
     html = html.replace('<script src="/'+name+'" defer></script>', '')
 html = html.replace('<link rel="stylesheet" href="/access.css">','')
 html = html.replace('每 15 秒自动同步','本地演示状态')

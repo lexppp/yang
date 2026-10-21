@@ -22,6 +22,7 @@ from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from auth import Accounts, AccessDenied, PERMISSIONS, allowed, required_permissions, redact_snapshot
+from community_runtime import CommunityRuntime, initialize as initialize_community, snapshot as community_snapshot
 
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
@@ -102,6 +103,7 @@ class Store:
             # Update only the former built-in template. Preserve administrators' custom text.
             db.execute('UPDATE groups SET welcome=? WHERE welcome=?',
                        (DEFAULT_WELCOME, DEFAULT_WELCOME.replace('/link', '/ink')))
+            initialize_community(db)
 
     @contextmanager
     def db(self):
@@ -180,6 +182,7 @@ class Store:
             logs = [dict(r) for r in db.execute(f'SELECT * FROM logs {where} ORDER BY id DESC LIMIT 100', args)]
             members = [dict(r) for r in db.execute(f'SELECT * FROM members {where} ORDER BY last_activity DESC LIMIT 500', args)]
             return dict(groups=groups, ranking=ranking, invites=invites, logs=logs, members=members,
+                        **community_snapshot(db,gid),
                         month=month, server_time=now().isoformat(),
                         next_reset=(now().replace(hour=0, minute=0, second=0, microsecond=0)+timedelta(days=1)).isoformat())
 
@@ -218,6 +221,7 @@ class Bot:
         self.store, self.api = store, api
         self.status = '未连接：请配置 TG_BOT_TOKEN'
         self.identity = None
+        self.community = CommunityRuntime(self,is_english_text)
 
     def send(self, gid, text, **kwargs):
         validate_telegram_text({'text': text, **kwargs})
@@ -228,7 +232,7 @@ class Bot:
             row = db.execute('SELECT * FROM invites WHERE group_id=? AND user_id=? AND active=1 ORDER BY id DESC LIMIT 1', (gid, user['id'])).fetchone()
         if row:
             return row['url']
-        result = self.api.call('createChatInviteLink', chat_id=gid, name=f"u{user['id']}", creates_join_request=True)
+        result = self.api.call('createChatInviteLink', chat_id=gid, name=f"u{user['id']}", creates_join_request=False)
         with self.store.db() as db:
             db.execute('INSERT INTO invites(group_id,user_id,url,created) VALUES(?,?,?,?)',
                        (gid, user['id'], result['invite_link'], now().isoformat()))
@@ -246,66 +250,29 @@ class Bot:
             self.send(group['id'], text)
 
     def approve(self, gid, user, inviter):
-        # Telegram approval must succeed before awarding anything.
         self.api.call('approveChatJoinRequest', chat_id=gid, user_id=user['id'])
-        self.store.member(gid, user, True)
-        self.store.referral(gid, user['id'], inviter)
         with self.store.db() as db:
-            db.execute('DELETE FROM challenges WHERE group_id=? AND user_id=?', (gid, user['id']))
-        self.store.event(gid, user['id'], '入群', '已批准入群申请；有效邀请仅奖励一次')
+            group = dict(db.execute('SELECT * FROM groups WHERE id=?',(gid,)).fetchone())
+            db.execute('DELETE FROM challenges WHERE group_id=? AND user_id=?',(gid,user['id']))
+        self.community.arrive(group,user,inviter=inviter)
+        self.store.event(gid,user['id'],'入群','已批准入群；启用验证时在群内完成后才奖励邀请积分')
 
     def join_request(self, request, group):
-        user, gid = request['from'], group['id']
+        user = request['from']
         if user.get('is_bot'):
-            self.api.call('declineChatJoinRequest', chat_id=gid, user_id=user['id'])
+            self.api.call('declineChatJoinRequest', chat_id=group['id'], user_id=user['id'])
             return
-        url = request.get('invite_link', {}).get('invite_link')
-        with self.store.db() as db:
-            row = db.execute('SELECT user_id FROM invites WHERE group_id=? AND url=? AND active=1', (gid, url)).fetchone()
-        inviter = row[0] if row else None
-        if not group['verify']:
-            self.approve(gid, user, inviter)
-            return
-        a, b = random.randint(2, 9), random.randint(2, 9)
-        answer, nonce = str(a+b), secrets.token_hex(6)
-        choices = [a+b, a+b+1, a+b-1]
-        random.shuffle(choices)
-        with self.store.db() as db:
-            db.execute('INSERT OR REPLACE INTO challenges VALUES(?,?,?,?,?,?,?)',
-                       (gid, user['id'], request['user_chat_id'], answer, nonce, time.time()+240, inviter))
-        self.send(request['user_chat_id'], f"Before joining {english_label(group['title'], 'the community')}, solve this: {a} + {b} = ?\nPlease answer within 4 minutes. If incorrect, submit a new join request.",
-                  reply_markup={'inline_keyboard': [[{'text': str(c), 'callback_data': f'v:{nonce}:{c}'} for c in choices]]})
-        self.store.event(gid, user['id'], '验证', '已发送私聊入群验证')
+        inviter = self.community.inviter(group['id'],request.get('invite_link',{}).get('invite_link'))
+        self.approve(group['id'],user,inviter)
 
     def callback(self, cb):
-        parts = cb.get('data', '').split(':')
-        if len(parts) != 3 or parts[0] != 'v':
+        if cb.get('data','').startswith('v:'):
+            self.api.call('answerCallbackQuery',callback_query_id=cb['id'],text='Verification now takes place inside the group. Please contact a group administrator.')
             return
-        with self.store.db() as db:
-            row = db.execute('SELECT * FROM challenges WHERE nonce=? AND user_id=?', (parts[1], cb['from']['id'])).fetchone()
-        if not row or row['expires'] < time.time():
-            self.api.call('answerCallbackQuery', callback_query_id=cb['id'], text='This verification has expired. Please submit a new join request.')
-            return
-        if not hmac.compare_digest(row['answer'], parts[2]):
-            self.api.call('declineChatJoinRequest', chat_id=row['group_id'], user_id=row['user_id'])
-            with self.store.db() as db:
-                db.execute('DELETE FROM challenges WHERE nonce=?', (parts[1],))
-            self.api.call('answerCallbackQuery', callback_query_id=cb['id'], text='Incorrect answer. Please submit a new join request.')
-            return
-        self.approve(row['group_id'], cb['from'], row['inviter_id'])
-        self.api.call('answerCallbackQuery', callback_query_id=cb['id'], text='Verification successful. Welcome to the community!')
+        return self.community.callback(cb)
 
     def expire(self):
-        with self.store.db() as db:
-            rows = db.execute('SELECT * FROM challenges WHERE expires<?', (time.time(),)).fetchall()
-        for row in rows:
-            try:
-                self.api.call('declineChatJoinRequest', chat_id=row['group_id'], user_id=row['user_id'])
-            except TelegramError:
-                pass  # Request may already have been handled by a human administrator.
-            with self.store.db() as db:
-                db.execute('DELETE FROM challenges WHERE nonce=?', (row['nonce'],))
-            self.store.event(row['group_id'], row['user_id'], '验证超时', '未完成验证；未奖励邀请积分')
+        self.community.expire()
 
     def handle(self, update):
         if 'callback_query' in update:
@@ -342,16 +309,26 @@ class Bot:
             return
         if 'chat_join_request' in update:
             return self.join_request(item, group)
+        self.community.observe_topic(item)
         if 'chat_member' in update:
             old, new = item['old_chat_member'], item['new_chat_member']
             user = new['user']
             present = new['status'] in ('member', 'administrator', 'creator') or (new['status'] == 'restricted' and new.get('is_member'))
             was_present = old['status'] in ('member', 'administrator', 'creator') or (old['status'] == 'restricted' and old.get('is_member'))
-            self.store.member(gid, user, bool(present))
-            if present and not was_present and not user.get('is_bot'):
-                self.welcome(group, user)
-                if group['verify'] and not item.get('via_join_request'):
-                    self.store.event(gid, user['id'], '验证绕过', '直接入群未经过申请验证；请在 Telegram 撤销其他直接入群链接')
+            if present and not was_present:
+                inviter=self.community.inviter(gid,item.get('invite_link',{}).get('invite_link'))
+                self.community.arrive(group,user,item.get('date'),inviter)
+            elif not present:
+                self.community.leave(gid,user)
+            else:
+                self.store.member(gid,user,True)
+            return
+        if item.get('new_chat_members'):
+            for new_user in item['new_chat_members']:
+                self.community.arrive(group,new_user,item.get('date'))
+            return
+        if item.get('left_chat_member'):
+            self.community.leave(gid,item['left_chat_member'])
             return
         user = item.get('from')
         if not user or user.get('is_bot') or item.get('sender_chat'):
@@ -516,9 +493,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path)
-        if path.path in ('/', '/style.css', '/app.js', '/access.js', '/access.css', '/access-policy.js'):
-            name = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/access.js':'access.js', '/access.css':'access.css', '/access-policy.js':'access-policy.js'}[path.path]
-            mime = {'index.html':'text/html; charset=utf-8','style.css':'text/css; charset=utf-8','app.js':'text/javascript; charset=utf-8','access.js':'text/javascript; charset=utf-8','access.css':'text/css; charset=utf-8','access-policy.js':'text/javascript; charset=utf-8'}[name]
+        if path.path in ('/', '/style.css', '/app.js', '/access.js', '/access.css', '/access-policy.js', '/live-announcements.js'):
+            name = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/access.js':'access.js', '/access.css':'access.css', '/access-policy.js':'access-policy.js', '/live-announcements.js':'live-announcements.js'}[path.path]
+            mime = {'index.html':'text/html; charset=utf-8','style.css':'text/css; charset=utf-8','app.js':'text/javascript; charset=utf-8','access.js':'text/javascript; charset=utf-8','access.css':'text/css; charset=utf-8','access-policy.js':'text/javascript; charset=utf-8', 'live-announcements.js':'text/javascript; charset=utf-8'}[name]
             if path.path == '/' and os.getenv('UI_MODE') == 'hosted-preview':
                 return self.respond(200,(ROOT/'frontend'/'hosted.html').read_bytes(),mime,{'Content-Security-Policy':"default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'"})
             return self.respond(200, (ROOT/'static'/name).read_bytes(), mime)
@@ -611,15 +588,21 @@ class Handler(BaseHTTPRequestHandler):
                     self.server.accounts.change_password(actor,data)
                     return self.respond(200, {'ok':True,'reauth_required':True})
                 return self.respond(404, {'error':'账号接口不存在'})
+            if self.path == '/api/announcements/save':
+                return self.respond(200,self.server.bot.community.save_announcement(data,session['user']))
+            if self.path.startswith('/api/announcements/'):
+                return self.respond(200,self.server.bot.community.announcement_action(self.path.rsplit('/',1)[-1],data.get('id')))
             if self.path == '/api/settings':
                 gid = int(data['group_id'])
-                allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','checkin_points','invite_points','language'}
+                allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','checkin_points','invite_points','language'}
                 changes = {k:v for k,v in data.items() if k in allowed_fields}
                 if not changes:
                     raise ValueError('没有可保存的设置')
                 for key in ['block_links','block_photos','block_ads','verify']:
                     if key in changes and type(changes[key]) is not bool:
                         raise ValueError('开关设置无效')
+                if 'verify_minutes' in changes and (type(changes['verify_minutes']) is not int or not 1 <= changes['verify_minutes'] <= 1440):
+                    raise ValueError('验证等待时间须为1至1440分钟的整数')
                 for key in ['checkin_points','invite_points']:
                     if key in changes and (type(changes[key]) is not int or not 0 <= changes[key] <= 10000):
                         raise ValueError('积分须为 0 至 10000 的整数')
@@ -657,7 +640,7 @@ class Handler(BaseHTTPRequestHandler):
         except AccessDenied as error:
             self.respond(403, {'error':str(error)})
         except (ValueError, KeyError, TypeError) as error:
-            message = str(error) if isinstance(error,ValueError) and (self.path.startswith('/api/admins/') or self.path == '/api/account/password') else '输入无效，请检查字段、积分范围和图片地址'
+            message = str(error) if isinstance(error,ValueError) and (self.path.startswith('/api/admins/') or self.path == '/api/account/password' or self.path.startswith('/api/announcements/')) else '输入无效，请检查字段、积分范围和图片地址'
             self.respond(400, {'error':message})
         except TelegramError as e:
             self.respond(502, {'error':str(e)})
@@ -695,6 +678,7 @@ def main():
         seed_demo(store)
         bot.status = '演示模式 · 未调用 Telegram'
     elif token:
+        bot.community.start()
         threading.Thread(target=bot.run, daemon=True, name='telegram-polling').start()
     server = AppServer((os.getenv('HOST', '127.0.0.1'), int(os.getenv('PORT','8000'))), store, password, bot, demo)
     log.info('Community OS started on port %s (%s)', server.server_port, 'demo' if demo else 'live')

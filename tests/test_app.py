@@ -26,6 +26,10 @@ class FakeTelegram:
             return {'status':'member'}
         if method == 'createChatInviteLink':
             return {'invite_link': 'https://t.me/+test_invite'}
+        if method in ('sendMessage','sendPhoto'):
+            return {'message_id':len(self.calls)}
+        if method == 'getChat':
+            return {'permissions':{'can_send_messages':True,'can_send_photos':True}}
         return True
 
 
@@ -86,7 +90,7 @@ class CoreTests(unittest.TestCase):
         self.bot.handle(self.message('/ink'))
         self.bot.handle(self.message('/ink@TestBot'))
         self.assertEqual(sum(method=='createChatInviteLink' for method,_ in self.api.calls),1)
-        self.assertTrue(next(p for m,p in self.api.calls if m=='createChatInviteLink')['creates_join_request'])
+        self.assertFalse(next(p for m,p in self.api.calls if m=='createChatInviteLink')['creates_join_request'])
         replies=[p['text'] for method,p in self.api.calls if method=='sendMessage']
         self.assertEqual(len(replies),4)
         self.assertTrue(all('https://t.me/+test_invite' in text for text in replies))
@@ -159,30 +163,30 @@ class CoreTests(unittest.TestCase):
         new={'id':2,'first_name':'Bob'}
         self.bot.join_request({'from':new,'user_chat_id':222,'invite_link':{'invite_link':link}},self.group)
         with self.store.db() as db:
-            row=dict(db.execute('SELECT * FROM challenges').fetchone())
+            row=dict(db.execute('SELECT * FROM member_arrivals WHERE user_id=2').fetchone())
         return new,row
 
     def test_verification_bound_to_user_and_approval(self):
         user,row=self.request_join()
         self.assertEqual(len(self.store.snapshot()['ranking']),0)
-        self.bot.callback({'id':'cb','from':{'id':3},'data':f"v:{row['nonce']}:{row['answer']}"})
-        self.assertFalse(any(m=='approveChatJoinRequest' for m,_ in self.api.calls))
-        self.bot.callback({'id':'cb2','from':user,'data':f"v:{row['nonce']}:{row['answer']}"})
+        self.bot.callback({'id':'cb','from':{'id':3},'data':f"gv:{row['nonce']}:{row['answer']}"})
+        self.assertFalse(any(m=='restrictChatMember' and p['permissions'].get('can_send_messages') for m,p in self.api.calls))
+        self.bot.callback({'id':'cb2','from':user,'data':f"gv:{row['nonce']}:{row['answer']}"})
         self.assertEqual(self.store.snapshot()['ranking'][0]['total'],20)
-        self.bot.callback({'id':'cb3','from':user,'data':f"v:{row['nonce']}:{row['answer']}"})
+        self.bot.callback({'id':'cb3','from':user,'data':f"gv:{row['nonce']}:{row['answer']}"})
         self.assertEqual(self.store.snapshot()['ranking'][0]['total'],20)
 
     def test_wrong_answer_and_expiry(self):
         user,row=self.request_join()
-        self.bot.callback({'id':'cb','from':user,'data':f"v:{row['nonce']}:999"})
-        self.assertTrue(any(m=='declineChatJoinRequest' for m,_ in self.api.calls))
+        self.bot.callback({'id':'cb','from':user,'data':f"gv:{row['nonce']}:999"})
+        self.assertFalse(any(m in ('declineChatJoinRequest','banChatMember') for m,_ in self.api.calls))
         self.assertEqual(len(self.store.snapshot()['ranking']),0)
-        user,row=self.request_join()
         with self.store.db() as db:
-            db.execute('UPDATE challenges SET expires=?',(time.time()-1,))
+            db.execute('UPDATE member_arrivals SET expires=?',(time.time()-1,))
         self.bot.expire()
         with self.store.db() as db:
-            self.assertEqual(db.execute('SELECT COUNT(*) FROM challenges').fetchone()[0],0)
+            self.assertEqual(db.execute('SELECT status FROM member_arrivals WHERE user_id=2').fetchone()[0],'timed_out')
+            self.assertIsNone(db.execute('SELECT prompt_id FROM member_arrivals WHERE user_id=2').fetchone()[0])
         self.assertEqual(len(self.store.snapshot()['ranking']),0)
 
     def test_approval_failure_has_no_reward(self):

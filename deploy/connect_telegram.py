@@ -20,7 +20,8 @@ import urllib.error
 import urllib.request
 
 
-BUSINESS_TABLES = ('groups', 'members', 'ledger', 'invites', 'referrals', 'challenges', 'logs')
+BUSINESS_TABLES = ('groups', 'members', 'ledger', 'invites', 'referrals', 'challenges', 'logs',
+                   'member_arrivals','forum_topics','announcement_plans','announcement_deliveries')
 
 
 def read_settings(path):
@@ -81,8 +82,10 @@ def prepare_database(source, destination):
                 # The copied source uses WAL. Commit into a single closed file before renaming.
                 fresh.execute('PRAGMA journal_mode=DELETE')
                 with fresh:
+                    existing={r[0] for r in fresh.execute("SELECT name FROM sqlite_master WHERE type='table'")}
                     for table in BUSINESS_TABLES:
-                        fresh.execute('DELETE FROM '+table)
+                        if table in existing:
+                            fresh.execute('DELETE FROM '+table)
                     fresh.execute('DELETE FROM meta')
                     fresh.execute("INSERT INTO meta VALUES('mode','live')")
             os.replace(temporary, destination)
@@ -115,8 +118,8 @@ def main():
     token = getpass.getpass('Paste your BotFather Token (input is hidden): ').strip()
     identity = telegram_preflight(token)
     print('Verified Telegram bot: @'+identity['username'])
-    print('Switching to the real CORE dashboard: groups, sign-in, invitation tracking, accounts.')
-    print('Monthly reset, manual points, Excel invitations, drawings and announcements still need their real backend.')
+    print('Switching to the real CORE dashboard: groups, verification, sign-in, invitations, announcements, accounts.')
+    print('Monthly reset, manual points, Excel invitations, and drawings still need their real backend.')
     source = Path(settings.get('DATABASE_PATH', '/var/lib/coinw/demo.sqlite3'))
     destination = Path('/var/lib/coinw/community.sqlite3')
     backup = Path('/var/lib/coinw/backups')/time.strftime('%Y%m%d-%H%M%S')
@@ -153,7 +156,7 @@ def main():
         print('Core live mode started. Your existing administrator accounts and passwords were preserved.')
         print('Live business records start empty.' if created else 'Existing live records were preserved.')
         print('Refresh https://panel.chloehub.top and sign in again. Check the Telegram status there.')
-        print('Next: add @'+identity['username']+' to a TEST group as administrator, then send coinw and /ink.')
+        print('Next: add @'+identity['username']+' to a TEST group as administrator, then send coinw and /link.')
         print('Health is verified locally; actual Telegram polling and real-group actions still need the acceptance checks.')
     except BaseException:
         if changed:
