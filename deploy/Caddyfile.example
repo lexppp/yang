@@ -1,0 +1,5 @@
+# Replace panel.example.win with your own DNS name pointing to the server.
+panel.example.win {
+    encode gzip
+    reverse_proxy 127.0.0.1:8000
+}

@@ -1,0 +1,8 @@
+{
+  "package": "@noble/hashes",
+  "version": "1.8.0",
+  "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz",
+  "npm_integrity": "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==",
+  "bundle_sha256": "882f054f7af0cc1cfbdfacbbdd201e4575830fd5140e37e63aab04698983961b",
+  "purpose": "PBKDF2-HMAC-SHA256 compatibility, same 120000 iterations and 32-byte output as the native browser implementation"
+}

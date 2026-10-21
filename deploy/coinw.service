@@ -1,0 +1,22 @@
+[Unit]
+Description=CoinW hosted demonstration (Telegram disconnected)
+After=network.target
+
+[Service]
+Type=simple
+User=coinw
+Group=coinw
+WorkingDirectory=/opt/coinw
+EnvironmentFile=/etc/coinw/coinw.env
+ExecStart=/usr/bin/python3 /opt/coinw/app.py
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/coinw
+
+[Install]
+WantedBy=multi-user.target
