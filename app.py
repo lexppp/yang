@@ -260,10 +260,13 @@ class Bot:
             template = 'Welcome, {name}, to {group}!'
         text = template.replace('{name}', english_label(user.get('first_name'), 'new member')).replace('{group}', english_label(group['title'], 'the community'))
         validate_telegram_text({'caption': text})
+        result=None
         if group['welcome_photo']:
-            self.api.call('sendPhoto', chat_id=group['id'], photo=group['welcome_photo'], caption=text[:1024])
+            result=self.api.call('sendPhoto', chat_id=group['id'], photo=group['welcome_photo'], caption=text[:1024])
         elif text:
-            self.send(group['id'], text)
+            result=self.send(group['id'], text)
+        self.community.schedule_cleanup(group,result,'welcome',user.get('id'))
+        return result
 
     def approve(self, gid, user, inviter, invite_url=None):
         self.api.call('approveChatJoinRequest', chat_id=gid, user_id=user['id'])
@@ -384,7 +387,8 @@ class Bot:
             with self.store.db() as db:
                 count = db.execute('SELECT COUNT(*) FROM referrals WHERE group_id=? AND inviter_id=?', (gid, user['id'])).fetchone()[0]
                 earned = db.execute("SELECT COALESCE(SUM(points),0) FROM ledger WHERE group_id=? AND user_id=? AND kind='invite'", (gid,user['id'])).fetchone()[0]
-            self.send(gid, f'🔗 Your personal invite link\n{link}\n\n👥 Successful invites: {count}\n💎 Invite points earned: {earned}\nEach successful invite earns {group["invite_points"]} points. Rejoining members do not earn additional rewards.', reply_parameters={'message_id': item['message_id']})
+            result=self.send(gid, f'🔗 Your personal invite link\n{link}\n\n👥 Successful invites: {count}\n💎 Invite points earned: {earned}\nEach successful invite earns {group["invite_points"]} points. Rejoining members do not earn additional rewards.', reply_parameters={'message_id': item['message_id']})
+            self.community.schedule_cleanup(group,result,'link',user['id'])
 
     def run(self):
         delay = 2
@@ -655,7 +659,7 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(200,self.server.bot.community.announcement_action(self.path.rsplit('/',1)[-1],data.get('id')))
             if self.path == '/api/settings':
                 gid = int(data['group_id'])
-                allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','checkin_points','invite_points','language'}
+                allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','welcome_delete_minutes','link_delete_minutes','checkin_points','invite_points','language'}
                 changes = {k:v for k,v in data.items() if k in allowed_fields}
                 if not changes:
                     raise ValueError('没有可保存的设置')
@@ -664,6 +668,9 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('开关设置无效')
                 if 'verify_minutes' in changes and (type(changes['verify_minutes']) is not int or not 1 <= changes['verify_minutes'] <= 1440):
                     raise ValueError('验证等待时间须为1至1440分钟的整数')
+                for key in ('welcome_delete_minutes','link_delete_minutes'):
+                    if key in changes and (type(changes[key]) is not int or not 0<=changes[key]<=1440):
+                        raise ValueError('消息自动删除时间须为0至1440分钟的整数，0表示保留')
                 for key in ['checkin_points','invite_points']:
                     if key in changes and (type(changes[key]) is not int or not 0 <= changes[key] <= 10000):
                         raise ValueError('积分须为 0 至 10000 的整数')

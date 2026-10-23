@@ -63,7 +63,7 @@ def required_permissions(path, body=None):
     if path == '/api/settings':
         body = body or {}
         requirements = []
-        if any(k in body for k in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'language')):
+        if any(k in body for k in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'welcome_delete_minutes', 'link_delete_minutes', 'language')):
             requirements.append('groups.manage')
         if any(k in body for k in ('checkin_points', 'invite_points')):
             requirements.append('points.configure')
@@ -96,7 +96,7 @@ def redact_snapshot(data, user):
     for group in data.get('groups', []):
         item = dict(group)
         if not allowed(user, 'groups.view'):
-            for key in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'language'):
+            for key in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'welcome_delete_minutes', 'link_delete_minutes', 'language'):
                 item.pop(key, None)
         if not allowed(user, 'points.view'):
             item.pop('checkin_points', None)

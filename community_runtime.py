@@ -19,7 +19,16 @@ def initialize(db):
     columns = {r[1] for r in db.execute('PRAGMA table_info(groups)')}
     if 'verify_minutes' not in columns:
         db.execute('ALTER TABLE groups ADD COLUMN verify_minutes INTEGER NOT NULL DEFAULT 4')
+    for name, default in (('welcome_delete_minutes',4),('link_delete_minutes',2)):
+        if name not in columns:
+            db.execute(f'ALTER TABLE groups ADD COLUMN {name} INTEGER NOT NULL DEFAULT {default}')
     db.executescript('''
+    CREATE TABLE IF NOT EXISTS bot_message_cleanup(
+      group_id INTEGER NOT NULL, message_id INTEGER NOT NULL, user_id INTEGER, kind TEXT NOT NULL,
+      created_at REAL NOT NULL, delete_at REAL NOT NULL, next_attempt REAL NOT NULL,
+      attempts INTEGER NOT NULL DEFAULT 0, status TEXT NOT NULL DEFAULT 'pending',
+      last_error TEXT NOT NULL DEFAULT '', PRIMARY KEY(group_id,message_id));
+    CREATE INDEX IF NOT EXISTS bot_message_cleanup_due ON bot_message_cleanup(status,next_attempt);
     CREATE TABLE IF NOT EXISTS member_arrivals(
       group_id INTEGER, user_id INTEGER, joined_at REAL NOT NULL, active INTEGER NOT NULL DEFAULT 1,
       status TEXT NOT NULL, nonce TEXT, answer TEXT, expires REAL, prompt_id INTEGER,
@@ -85,6 +94,69 @@ class CommunityRuntime:
     def __init__(self, bot, english):
         self.bot, self.store, self.english = bot, bot.store, english
         self.member_lock, self.announcement_lock = threading.RLock(), threading.RLock()
+        self.cleanup_lock = threading.RLock()
+
+    def schedule_cleanup(self, group, message, kind, uid=None):
+        """Persist only IDs of our own welcome/link responses, never arbitrary group messages."""
+        defaults={'welcome':4,'link':2}
+        minutes=group.get(kind+'_delete_minutes',defaults[kind])
+        if not minutes or not message:
+            return
+        mid=message.get('message_id')
+        if type(mid) is not int or mid<=0:
+            raise ValueError('Telegram did not return a valid message ID for cleanup')
+        created=time.time()
+        with self.store.db() as db:
+            db.execute('INSERT OR IGNORE INTO bot_message_cleanup(group_id,message_id,user_id,kind,created_at,delete_at,next_attempt) VALUES(?,?,?,?,?,?,?)',
+                       (group['id'],mid,uid,kind,created,created+minutes*60,created+minutes*60))
+
+    def cleanup_messages(self):
+        """Restart-safe, bounded retries. Physical chat/message IDs must never be migrated."""
+        if not self.bot.api:
+            return
+        with self.cleanup_lock:
+            at=time.time()
+            with self.store.db() as db:
+                rows=[dict(r) for r in db.execute("SELECT * FROM bot_message_cleanup WHERE status='pending' AND next_attempt<=? ORDER BY next_attempt LIMIT 20",(at,))]
+            for row in rows:
+                # Disconnect and migration use these locks too. Stop processing detached groups.
+                with self.member_lock:
+                    with self.store.db() as db:
+                        canonical=resolve(db,row['group_id'])
+                        managed=db.execute('SELECT disconnected FROM groups WHERE id=?',(canonical,)).fetchone()
+                    if not managed or managed['disconnected']:
+                        with self.store.db() as db:
+                            db.execute("UPDATE bot_message_cleanup SET status='cancelled' WHERE group_id=? AND message_id=?",(row['group_id'],row['message_id']))
+                        continue
+                    error=None
+                    if time.time()-row['created_at']>=48*3600:
+                        error=ValueError('Telegram deletion window (48 hours) has expired')
+                    else:
+                        try:
+                            self.bot.api.call('deleteMessage',chat_id=row['group_id'],message_id=row['message_id'])
+                        except Exception as caught:
+                            if 'message to delete not found' not in str(caught).lower():
+                                error=caught
+                    if error is None:
+                        with self.store.db() as db:
+                            db.execute('DELETE FROM bot_message_cleanup WHERE group_id=? AND message_id=?',(row['group_id'],row['message_id']))
+                        continue
+                    detail=str(error)[:500]
+                    attempts=row['attempts']+1
+                    terminal=attempts>=24 or time.time()-row['created_at']>=48*3600 or any(text in detail.lower() for text in ("message can't be deleted",'message cannot be deleted','migrated to a supergroup'))
+                    delay=min(30*2**min(attempts-1,7),3600)
+                    retry_after=getattr(error,'parameters',{}).get('retry_after')
+                    if type(retry_after) is int and retry_after>0:
+                        delay=max(delay,min(retry_after+1,86400))
+                    with self.store.db() as db:
+                        db.execute('UPDATE bot_message_cleanup SET attempts=?,status=?,last_error=?,next_attempt=? WHERE group_id=? AND message_id=?',
+                                   (attempts,'failed' if terminal else 'pending',detail,time.time()+delay,row['group_id'],row['message_id']))
+                    if attempts==1 or terminal:
+                        label='欢迎语' if row['kind']=='welcome' else '邀请链接消息'
+                        self.store.event(canonical,row['user_id'],'自动清理失败' if terminal else '自动清理重试',
+                                         label+f" · message_id={row['message_id']} · "+detail+('；请检查删除消息权限或手动删除' if terminal else '；稍后自动重试，请检查删除消息权限和网络'))
+            with self.store.db() as db:
+                db.execute("DELETE FROM bot_message_cleanup WHERE status IN ('failed','cancelled') AND created_at<?",(time.time()-30*86400,))
 
     def inviter(self, gid, link):
         if not link:
@@ -455,6 +527,7 @@ class CommunityRuntime:
                     self.store.event(None,None,'后台任务错误','请检查机器人权限、存储和 Telegram 网络')
                 time.sleep(interval)
         threading.Thread(target=loop,args=(self.expire,1),daemon=True,name='group-verification-cleanup').start()
+        threading.Thread(target=loop,args=(self.cleanup_messages,1),daemon=True,name='welcome-link-cleanup').start()
         threading.Thread(target=loop,args=(self.process_announcements,2),daemon=True,name='announcement-scheduler').start()
         threading.Thread(target=loop,args=(self.probe_migrations,300),daemon=True,name='group-migration-repair').start()
         threading.Thread(target=loop,args=(self.repair_referrals,30),daemon=True,name='invitation-credit-repair').start()

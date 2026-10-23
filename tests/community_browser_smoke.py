@@ -29,9 +29,20 @@ with tempfile.TemporaryDirectory() as directory:
             page.locator('[data-settings]').first.click()
             expect(page.locator('#settings-dialog')).to_contain_text('超时自动删除验证消息')
             page.locator('#settings-form [name=verify_minutes]').fill('2')
+            page.locator('#settings-form [name=welcome_delete_minutes]').fill('3')
+            page.locator('#settings-form [name=link_delete_minutes]').fill('1')
             page.locator('#settings-form button[type=submit]').click()
             expect(page.locator('#settings-dialog')).not_to_be_visible()
             assert store.snapshot()['groups'][0]['verify_minutes']==2
+            assert store.snapshot()['groups'][0]['welcome_delete_minutes']==3
+            assert store.snapshot()['groups'][0]['link_delete_minutes']==1
+            page.locator('[data-settings]').first.click()
+            expect(page.locator('#settings-form [name=welcome_delete_minutes]')).to_have_value('3')
+            expect(page.locator('#settings-form [name=link_delete_minutes]')).to_have_value('1')
+            page.set_viewport_size({'width':390,'height':844})
+            assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+            page.locator('#close-settings').click()
+            page.set_viewport_size({'width':1440,'height':1100})
             page.locator('[data-page=announcements]').click()
             f=page.locator('#live-announcement-form')
             expect(f).to_be_visible()
@@ -67,6 +78,6 @@ with tempfile.TemporaryDirectory() as directory:
             page.screenshot(path=str(output/'announcement-desktop.png'),full_page=True)
             assert not errors,errors
             browser.close()
-            print('PASS: real login, verification timeout UI/save, announcement nav/form, photo + topic + pin API calls, multi-slot schedule, pause, English validation, mobile overflow. No real Telegram calls.')
+            print('PASS: real login, verification and welcome/link cleanup settings UI/save/reopen, announcement nav/form, photo + topic + pin API calls, multi-slot schedule, pause, English validation, mobile overflow. No real Telegram calls.')
     finally:
         server.shutdown();server.server_close();worker.join()

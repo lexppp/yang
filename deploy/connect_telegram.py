@@ -21,7 +21,7 @@ import urllib.request
 
 
 BUSINESS_TABLES = ('groups', 'members', 'ledger', 'invites', 'referrals', 'challenges', 'logs',
-                   'member_arrivals','forum_topics','announcement_plans','announcement_deliveries','group_migrations')
+                   'member_arrivals','forum_topics','announcement_plans','announcement_deliveries','group_migrations','bot_message_cleanup')
 
 
 def read_settings(path):

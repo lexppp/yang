@@ -77,6 +77,7 @@ def migrate(store, old, new):
                 db.execute('DELETE FROM ledger WHERE id=?',(row['id'],))
             else:
                 db.execute('UPDATE ledger SET group_id=? WHERE id=?',(target,row['id']))
+        # bot_message_cleanup retains physical chat IDs: never retarget old message IDs.
         # Old basic-group message IDs must never be used to delete messages in the new group.
         db.execute('UPDATE member_arrivals SET prompt_id=NULL,nonce=NULL WHERE group_id=?',(old,))
         db.execute('UPDATE OR IGNORE member_arrivals SET group_id=? WHERE group_id=?',(target,old))
@@ -97,4 +98,5 @@ def disconnect(store, gid):
         db.execute('UPDATE groups SET disconnected=1,active=0 WHERE id=?',(gid,))
         db.execute("UPDATE announcement_plans SET status='paused',next_run=NULL WHERE group_id=? AND status='scheduled'",(gid,))
         db.execute("UPDATE member_arrivals SET status='disconnected' WHERE group_id=? AND status='pending'",(gid,))
+        db.execute("UPDATE bot_message_cleanup SET status='cancelled' WHERE group_id=? AND status='pending'",(gid,))
     return gid
