@@ -13,6 +13,12 @@ with tempfile.TemporaryDirectory() as directory:
     store=Store(Path(directory)/'browser.sqlite3')
     store.group({'id':-1001,'title':'CoinW Test Community'})
     api=FakeTelegram();bot=Bot(store,api)
+    original_call=api.call
+    def api_with_rights(method,**params):
+        if method=='getMe':return {'id':999,'username':'FixtureBot'}
+        if method=='getChatMember' and params.get('user_id')==999:return {'status':'administrator','can_delete_messages':True,'can_restrict_members':True}
+        return original_call(method,**params)
+    api.call=api_with_rights
     bot.community.observe_topic({'chat':{'id':-1001},'message_thread_id':123,'forum_topic_created':{'name':'Community News'}})
     password='disposable-community-browser-fixture'
     server=AppServer(('127.0.0.1',0),store,password,bot,False)
@@ -28,6 +34,12 @@ with tempfile.TemporaryDirectory() as directory:
             expect(page.locator('.stat-value').first).to_be_visible()
             page.locator('[data-settings]').first.click()
             expect(page.locator('#settings-dialog')).to_contain_text('超时自动删除验证消息')
+            page.locator('#spam-preset').click()
+            page.locator('#check-bot-permissions').click()
+            expect(page.locator('#moderation-health')).to_contain_text('权限检查通过')
+            page.locator('#settings-form [name=allowed_mentions]').fill('@Official_support')
+            page.locator('#settings-form [name=spam_strikes]').fill('2')
+            page.locator('#settings-form [name=spam_mute_minutes]').fill('60')
             page.locator('#settings-form [name=verify_minutes]').fill('2')
             page.locator('#settings-form [name=welcome_delete_minutes]').fill('3')
             page.locator('#settings-form [name=link_delete_minutes]').fill('1')
@@ -36,9 +48,14 @@ with tempfile.TemporaryDirectory() as directory:
             assert store.snapshot()['groups'][0]['verify_minutes']==2
             assert store.snapshot()['groups'][0]['welcome_delete_minutes']==3
             assert store.snapshot()['groups'][0]['link_delete_minutes']==1
+            assert store.snapshot()['groups'][0]['spam_mute_minutes']==60
+            assert store.snapshot()['groups'][0]['block_mentions']==1
+            assert store.snapshot()['groups'][0]['allowed_mentions']=='@Official_support'
             page.locator('[data-settings]').first.click()
             expect(page.locator('#settings-form [name=welcome_delete_minutes]')).to_have_value('3')
             expect(page.locator('#settings-form [name=link_delete_minutes]')).to_have_value('1')
+            expect(page.locator('#settings-form [name=spam_mute_minutes]')).to_have_value('60')
+            expect(page.locator('#settings-form [name=block_forwards]')).to_be_checked()
             page.set_viewport_size({'width':390,'height':844})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             page.locator('#close-settings').click()
@@ -78,6 +95,6 @@ with tempfile.TemporaryDirectory() as directory:
             page.screenshot(path=str(output/'announcement-desktop.png'),full_page=True)
             assert not errors,errors
             browser.close()
-            print('PASS: real login, verification and welcome/link cleanup settings UI/save/reopen, announcement nav/form, photo + topic + pin API calls, multi-slot schedule, pause, English validation, mobile overflow. No real Telegram calls.')
+            print('PASS: real login, verification and welcome/link cleanup settings UI/save/reopen, spam presets/permissions/settings, announcement nav/form, photo + topic + pin API calls, multi-slot schedule, pause, English validation, mobile overflow. No real Telegram calls.')
     finally:
         server.shutdown();server.server_close();worker.join()

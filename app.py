@@ -24,6 +24,7 @@ from pathlib import Path
 from auth import Accounts, AccessDenied, PERMISSIONS, allowed, required_permissions, redact_snapshot
 from community_runtime import CommunityRuntime, initialize as initialize_community, snapshot as community_snapshot
 from group_links import initialize as initialize_links, resolve as resolve_group, migrate as migrate_group, visible_sql, disconnect as disconnect_group
+from moderation import initialize as initialize_moderation, moderation_reason, SpamGuard, SETTINGS as MODERATION_SETTINGS, BOOL_DEFAULTS as MODERATION_SWITCHES
 
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
@@ -106,6 +107,7 @@ class Store:
                        (DEFAULT_WELCOME, DEFAULT_WELCOME.replace('/link', '/ink')))
             initialize_community(db)
             initialize_links(db)
+            initialize_moderation(db)
 
     @contextmanager
     def db(self):
@@ -238,6 +240,7 @@ class Bot:
         self.status = '未连接：请配置 TG_BOT_TOKEN'
         self.identity = None
         self.community = CommunityRuntime(self,is_english_text)
+        self.guard = SpamGuard(self)
 
     def send(self, gid, text, **kwargs):
         validate_telegram_text({'text': text, **kwargs})
@@ -359,21 +362,30 @@ class Bot:
         if item.get('left_chat_member'):
             self.community.leave(gid,item['left_chat_member'])
             return
+        if item.get('sender_chat'):
+            # Anonymous group admins and Telegram's linked-channel automatic forwards are trusted.
+            # Never restrict Telegram's synthetic anonymous-user ID as though it were a member.
+            if item['sender_chat']['id']==gid or item.get('is_automatic_forward'):
+                return
+            self.guard.inspect(group,item,edited='edited_message' in update)
+            return
         user = item.get('from')
-        if not user or user.get('is_bot') or item.get('sender_chat'):
+        if not user or user.get('is_bot'):
             return
         self.store.member(gid, user)
         text = item.get('text', item.get('caption', ''))
         with self.store.db() as db:
             db.execute('UPDATE groups SET messages=messages+?,last_activity=? WHERE id=?', (0 if 'edited_message' in update else 1, now().isoformat(), gid))
         # Group administrators are exempt from moderation, but can sign in.
-        admin = self.api.call('getChatMember', chat_id=gid, user_id=user['id'])['status'] in ('administrator', 'creator')
-        if not admin:
-            reason = moderation_reason(group, item)
-            if reason:
-                self.api.call('deleteMessage', chat_id=gid, message_id=item['message_id'])
-                self.store.event(gid, user['id'], '内容拦截', reason)
-                return
+        try:
+            admin = self.api.call('getChatMember', chat_id=gid, user_id=user['id'])['status'] in ('administrator', 'creator')
+        except TelegramError:
+            # Preserve suspected spam for retry rather than losing the update. Jobs recheck
+            # administrator status before deleting/restricting, including after a restart.
+            self.guard.inspect(group,item,user['id'],edited='edited_message' in update)
+            return
+        if not admin and self.guard.inspect(group,item,user['id'],edited='edited_message' in update):
+            return
         if 'edited_message' in update:
             return
         if text.strip().casefold() == 'coinw':
@@ -429,19 +441,6 @@ class Bot:
                 self.status = '轮询内部错误，请检查存储及运行环境'
                 log.error('Polling internal failure')
                 time.sleep(5)
-
-
-def moderation_reason(group, message):
-    text = message.get('text', message.get('caption', ''))
-    entities = message.get('entities', []) + message.get('caption_entities', [])
-    if group['block_links'] and (any(e['type'] in ('url', 'text_link') for e in entities) or re.search(r'https?://|t\.me/|www\.|\b[\w-]+\.(?:com|net|org|io|xyz)\b', text, re.I)):
-        return '包含链接'
-    if group['block_photos'] and ('photo' in message or message.get('document', {}).get('mime_type', '').startswith('image/')):
-        return '包含图片'
-    words = [w.strip().casefold() for w in group['keywords'].split(',') if w.strip()]
-    if group['block_ads'] and any(word in text.casefold() for word in words):
-        return '命中广告关键词'
-    return None
 
 
 def seed_demo(store):
@@ -611,6 +610,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403, {'error':'无权执行此操作'})
             if self.path == '/api/invites/attribute':
                 return self.respond(200,self.server.bot.community.manual_attribution(data,session['user']))
+            if self.path == '/api/moderation/status':
+                return self.respond(200,self.server.bot.guard.status(int(data['group_id'])))
             if self.path == '/api/groups/disconnect':
                 if type(data.get('leave',False)) is not bool:
                     raise ValueError('退出群选项无效')
@@ -660,10 +661,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == '/api/settings':
                 gid = int(data['group_id'])
                 allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','welcome_delete_minutes','link_delete_minutes','checkin_points','invite_points','language'}
+                allowed_fields.update(MODERATION_SETTINGS)
                 changes = {k:v for k,v in data.items() if k in allowed_fields}
                 if not changes:
                     raise ValueError('没有可保存的设置')
-                for key in ['block_links','block_photos','block_ads','verify']:
+                for key in ['block_links','block_photos','block_ads','verify',*MODERATION_SWITCHES]:
                     if key in changes and type(changes[key]) is not bool:
                         raise ValueError('开关设置无效')
                 if 'verify_minutes' in changes and (type(changes['verify_minutes']) is not int or not 1 <= changes['verify_minutes'] <= 1440):
@@ -674,7 +676,10 @@ class Handler(BaseHTTPRequestHandler):
                 for key in ['checkin_points','invite_points']:
                     if key in changes and (type(changes[key]) is not int or not 0 <= changes[key] <= 10000):
                         raise ValueError('积分须为 0 至 10000 的整数')
-                for key in ['welcome','welcome_photo','keywords','language']:
+                for key,minimum,maximum in [('spam_mute_minutes',0,10080),('spam_strikes',1,10)]:
+                    if key in changes and (type(changes[key]) is not int or not minimum<=changes[key]<=maximum):
+                        raise ValueError('违规次数须为1–10次，禁言时间为0–10080分钟（0仅删除）')
+                for key in ['welcome','welcome_photo','keywords','language','allowed_mentions']:
                     if key in changes and (not isinstance(changes[key], str) or len(changes[key]) > (900 if key=='welcome' else 1000)):
                         raise ValueError('文本格式或长度无效')
                 if 'welcome' in changes and not is_english_text(changes['welcome']):
@@ -708,7 +713,7 @@ class Handler(BaseHTTPRequestHandler):
         except AccessDenied as error:
             self.respond(403, {'error':str(error)})
         except (ValueError, KeyError, TypeError) as error:
-            message = str(error) if isinstance(error,ValueError) and (self.path.startswith(('/api/admins/','/api/announcements/','/api/groups/','/api/invites/')) or self.path == '/api/account/password') else '输入无效，请检查字段、积分范围和图片地址'
+            message = str(error) if isinstance(error,ValueError) and (self.path.startswith(('/api/admins/','/api/announcements/','/api/groups/','/api/invites/','/api/moderation/')) or self.path == '/api/account/password') else '输入无效，请检查字段、积分范围和图片地址'
             self.respond(400, {'error':message})
         except TelegramError as e:
             self.respond(502, {'error':str(e)})

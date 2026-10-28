@@ -13,7 +13,8 @@ window.accessAllowed=(user,p)=>!!user&&(user.role==='superadmin'||(user.permissi
 window.accessRequirements=(path,body={})=>{
  if(['/api/groups/disconnect','/api/groups/restore','/api/groups/disconnected'].includes(path))return ['groups.disconnect'];
  if(path==='/api/invites/attribute')return ['invites.attribute'];
- if(path==='/api/settings')return [...(['welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','welcome_delete_minutes','link_delete_minutes','language'].some(k=>k in body)?['groups.manage']:[]),...(['checkin_points','invite_points'].some(k=>k in body)?['points.configure']:[])];
+ if(path==='/api/moderation/status')return ['groups.manage'];
+ if(path==='/api/settings')return [...(['welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','welcome_delete_minutes','link_delete_minutes','language','block_mentions','block_buttons','block_forwards','block_sender_chat','block_repeats','block_flood','allowed_mentions','spam_strikes','spam_mute_minutes'].some(k=>k in body)?['groups.manage']:[]),...(['checkin_points','invite_points'].some(k=>k in body)?['points.configure']:[])];
  if(path==='/api/export')return ['points.export'];if(path==='/api/revoke')return ['invites.manage'];
  if(path.startsWith('/api/points/'))return ['points.adjust'];if(path.startsWith('/api/draws/'))return ['draws.manage'];if(path.startsWith('/api/announcements/'))return ['announcements.manage'];
  if(path.startsWith('/api/admin'))return ['admins.manage'];return [];

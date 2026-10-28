@@ -33,7 +33,7 @@ fi
 install -d -m 0755 /opt/coinw /opt/coinw/static /opt/coinw/frontend
 install -d -m 0700 /etc/coinw
 install -d -o coinw -g coinw -m 0700 /var/lib/coinw
-install -m 0644 app.py auth.py community_runtime.py group_links.py /opt/coinw/
+install -m 0644 app.py auth.py community_runtime.py group_links.py moderation.py /opt/coinw/
 install -m 0644 static/* /opt/coinw/static/
 install -m 0644 frontend/hosted.html /opt/coinw/frontend/
 

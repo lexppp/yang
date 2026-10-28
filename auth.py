@@ -5,6 +5,7 @@ import json
 import re
 import secrets
 from datetime import datetime, timezone
+from moderation import SETTINGS as MODERATION_SETTINGS
 
 PERMISSIONS = {
     'dashboard.view': '数据总览',
@@ -56,6 +57,8 @@ def allowed(user, permission):
 
 
 def required_permissions(path, body=None):
+    if path == '/api/moderation/status':
+        return ['groups.manage']
     if path in ('/api/groups/disconnect','/api/groups/restore','/api/groups/disconnected'):
         return ['groups.disconnect']
     if path == '/api/invites/attribute':
@@ -63,7 +66,7 @@ def required_permissions(path, body=None):
     if path == '/api/settings':
         body = body or {}
         requirements = []
-        if any(k in body for k in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'welcome_delete_minutes', 'link_delete_minutes', 'language')):
+        if any(k in body for k in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'welcome_delete_minutes', 'link_delete_minutes', 'language',*MODERATION_SETTINGS)):
             requirements.append('groups.manage')
         if any(k in body for k in ('checkin_points', 'invite_points')):
             requirements.append('points.configure')
@@ -96,7 +99,7 @@ def redact_snapshot(data, user):
     for group in data.get('groups', []):
         item = dict(group)
         if not allowed(user, 'groups.view'):
-            for key in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'welcome_delete_minutes', 'link_delete_minutes', 'language'):
+            for key in ('welcome', 'welcome_photo', 'block_links', 'block_photos', 'block_ads', 'keywords', 'verify', 'verify_minutes', 'welcome_delete_minutes', 'link_delete_minutes', 'language',*MODERATION_SETTINGS):
                 item.pop(key, None)
         if not allowed(user, 'points.view'):
             item.pop('checkin_points', None)

@@ -45,6 +45,7 @@ function applyAccess(){
  for(const [selector,permission] of guardedControls)document.querySelectorAll(selector).forEach(el=>{el.hidden=!anyAllowed(permission);});
  for(const [selector,permission] of [['.draw-create-grid','draws.manage'],['.announcement-compose-grid','announcements.manage']])document.querySelectorAll(selector).forEach(el=>{const container=el.closest('.panel');if(container)container.hidden=!can(permission);});
  document.querySelectorAll('[data-reward-gid]').forEach(form=>form.hidden=!can('points.configure'));
+ for(const id of ['spam-preset','check-bot-permissions'])if($('#'+id))$('#'+id).hidden=!can('groups.manage');
  const sf=$('#settings-form');if(sf){for(const el of sf.elements){if(!el.name||el.name==='group_id')continue;el.disabled=['checkin_points','invite_points'].includes(el.name)?!can('points.configure'):!can('groups.manage');}sf.querySelectorAll('.form-section').forEach(section=>{const fields=[...section.querySelectorAll('input,textarea')].filter(el=>el.name);if(fields.length)section.hidden=fields.every(el=>el.disabled);});}
  if($('#try-bot'))$('#try-bot').hidden=!['points.adjust','invites.manage','groups.manage'].some(can);
 }

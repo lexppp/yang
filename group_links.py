@@ -85,6 +85,8 @@ def migrate(store, old, new):
         for table in ('invites','logs','announcement_plans','announcement_deliveries'):
             db.execute(f'UPDATE {table} SET group_id=? WHERE group_id=?',(target,old))
         db.execute('UPDATE groups SET active=0 WHERE id=?',(old,))
+        # Do not replay moderation actions against a migrated chat with mismatched message IDs.
+        db.execute("UPDATE moderation_jobs SET status='cancelled' WHERE group_id=? AND status='pending'",(old,))
         db.execute('INSERT INTO group_migrations VALUES(?,?,?)',(old,target,time.time()))
     store.event(target,None,'社群升级合并',f'{old} → {target}；已迁移邀请链接及历史数据')
 
@@ -99,4 +101,5 @@ def disconnect(store, gid):
         db.execute("UPDATE announcement_plans SET status='paused',next_run=NULL WHERE group_id=? AND status='scheduled'",(gid,))
         db.execute("UPDATE member_arrivals SET status='disconnected' WHERE group_id=? AND status='pending'",(gid,))
         db.execute("UPDATE bot_message_cleanup SET status='cancelled' WHERE group_id=? AND status='pending'",(gid,))
+        db.execute("UPDATE moderation_jobs SET status='cancelled' WHERE group_id=? AND status='pending'",(gid,))
     return gid
