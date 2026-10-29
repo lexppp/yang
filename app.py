@@ -50,10 +50,6 @@ def is_english_text(text):
     return all(not unicodedata.category(c).startswith('L') or 'LATIN' in unicodedata.name(c, '') for c in str(text))
 
 
-def english_label(value, fallback):
-    return str(value) if value and is_english_text(value) else fallback
-
-
 def validate_telegram_text(value):
     if isinstance(value, dict):
         for key, item in value.items():
@@ -207,12 +203,21 @@ class TelegramError(Exception):
         self.parameters=parameters or {}
 
 
+class SettingsError(ValueError):
+    def __init__(self, field, message):
+        super().__init__(message)
+        self.field=field
+
+
 class Telegram:
     def __init__(self, token):
         self.token = token
 
-    def call(self, method, **params):
-        validate_telegram_text(params)
+    def call(self, method, *, _welcome=False, **params):
+        # Welcome templates are per-group Unicode content, not the language of system commands.
+        # Consume this private option here; it must never be sent to Telegram as an API field.
+        if not (_welcome is True and method in ('sendMessage','sendPhoto')):
+            validate_telegram_text(params)
         req = urllib.request.Request('https://api.telegram.org/bot'+self.token+'/'+method,
                                      data=json.dumps(params).encode(), headers={'Content-Type': 'application/json'})
         try:
@@ -242,8 +247,11 @@ class Bot:
         self.community = CommunityRuntime(self,is_english_text)
         self.guard = SpamGuard(self)
 
-    def send(self, gid, text, **kwargs):
-        validate_telegram_text({'text': text, **kwargs})
+    def send(self, gid, text, *, _welcome=False, **kwargs):
+        if _welcome:
+            kwargs['_welcome']=True
+        else:
+            validate_telegram_text({'text': text, **kwargs})
         return self.api.call('sendMessage', chat_id=gid, text=text, **kwargs)
 
     def invite(self, gid, user):
@@ -259,15 +267,13 @@ class Bot:
 
     def welcome(self, group, user):
         template = group['welcome']
-        if template == '欢迎 {name} 加入 {group}！':
-            template = 'Welcome, {name}, to {group}!'
-        text = template.replace('{name}', english_label(user.get('first_name'), 'new member')).replace('{group}', english_label(group['title'], 'the community'))
-        validate_telegram_text({'caption': text})
+        values={'name':user.get('first_name') or 'new member','group':group['title'] or 'the community'}
+        text = re.sub(r'\{(name|group)\}',lambda match:values[match[1]],template)
         result=None
         if group['welcome_photo']:
-            result=self.api.call('sendPhoto', chat_id=group['id'], photo=group['welcome_photo'], caption=text[:1024])
+            result=self.api.call('sendPhoto', chat_id=group['id'], photo=group['welcome_photo'], caption=text[:1024],_welcome=True)
         elif text:
-            result=self.send(group['id'], text)
+            result=self.send(group['id'], text,_welcome=True)
         self.community.schedule_cleanup(group,result,'welcome',user.get('id'))
         return result
 
@@ -659,40 +665,50 @@ class Handler(BaseHTTPRequestHandler):
             if self.path.startswith('/api/announcements/'):
                 return self.respond(200,self.server.bot.community.announcement_action(self.path.rsplit('/',1)[-1],data.get('id')))
             if self.path == '/api/settings':
-                gid = int(data['group_id'])
+                if type(data.get('group_id')) is not int:
+                    raise SettingsError('group_id','社群选择无效，请关闭设置后重新选择社群')
+                gid = data['group_id']
                 allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','welcome_delete_minutes','link_delete_minutes','checkin_points','invite_points','language'}
                 allowed_fields.update(MODERATION_SETTINGS)
                 changes = {k:v for k,v in data.items() if k in allowed_fields}
                 if not changes:
-                    raise ValueError('没有可保存的设置')
+                    raise SettingsError('','没有可保存的设置')
                 for key in ['block_links','block_photos','block_ads','verify',*MODERATION_SWITCHES]:
                     if key in changes and type(changes[key]) is not bool:
-                        raise ValueError('开关设置无效')
+                        raise SettingsError(key,'开关设置无效，请重新选择开关状态')
                 if 'verify_minutes' in changes and (type(changes['verify_minutes']) is not int or not 1 <= changes['verify_minutes'] <= 1440):
-                    raise ValueError('验证等待时间须为1至1440分钟的整数')
+                    raise SettingsError('verify_minutes','验证消息保留时间须为1至1440分钟的整数')
                 for key in ('welcome_delete_minutes','link_delete_minutes'):
                     if key in changes and (type(changes[key]) is not int or not 0<=changes[key]<=1440):
-                        raise ValueError('消息自动删除时间须为0至1440分钟的整数，0表示保留')
+                        label='欢迎语' if key=='welcome_delete_minutes' else '邀请链接消息'
+                        raise SettingsError(key,label+'自动删除时间须为0至1440分钟的整数，0表示保留')
                 for key in ['checkin_points','invite_points']:
                     if key in changes and (type(changes[key]) is not int or not 0 <= changes[key] <= 10000):
-                        raise ValueError('积分须为 0 至 10000 的整数')
+                        label='每日签到积分' if key=='checkin_points' else '有效邀请积分'
+                        raise SettingsError(key,label+'须为0至10000的整数')
                 for key,minimum,maximum in [('spam_mute_minutes',0,10080),('spam_strikes',1,10)]:
                     if key in changes and (type(changes[key]) is not int or not minimum<=changes[key]<=maximum):
-                        raise ValueError('违规次数须为1–10次，禁言时间为0–10080分钟（0仅删除）')
+                        raise SettingsError(key,'违规次数须为1–10次' if key=='spam_strikes' else '违规禁言时间须为0–10080分钟的整数（0仅删除）')
                 for key in ['welcome','welcome_photo','keywords','language','allowed_mentions']:
                     if key in changes and (not isinstance(changes[key], str) or len(changes[key]) > (900 if key=='welcome' else 1000)):
-                        raise ValueError('文本格式或长度无效')
-                if 'welcome' in changes and not is_english_text(changes['welcome']):
-                    raise ValueError('Welcome text must use English')
+                        label={'welcome':'欢迎词','welcome_photo':'欢迎图片','keywords':'广告关键词','language':'系统提示语言','allowed_mentions':'允许提及的账号'}[key]
+                        raise SettingsError(key,label+('最多支持900个字符' if key=='welcome' else '须为1000字符以内的文字'))
                 photo = changes.get('welcome_photo', '')
-                if photo and not (photo.startswith('https://') or re.fullmatch(r'[\w-]+', photo)):
-                    raise ValueError('图片请使用 HTTPS URL 或 Telegram file_id')
+                if photo:
+                    valid_url=False
+                    try:
+                        parsed=urllib.parse.urlsplit(photo)
+                        valid_url=parsed.scheme=='https' and bool(parsed.hostname) and not any(c.isspace() for c in photo)
+                    except ValueError:
+                        pass
+                    if not (valid_url or re.fullmatch(r'[A-Za-z0-9_-]+', photo)):
+                        raise SettingsError('welcome_photo','欢迎图片请填写完整HTTPS图片地址或Telegram file_id；不填图片可以留空')
                 if 'language' in changes and changes['language'] != 'en':
-                    raise ValueError('机器人对外文案仅提供英文')
+                    raise SettingsError('language','系统提示语言目前为英文；欢迎词可直接填写中文、日文或英文，无需修改系统语言')
                 with self.server.store.db() as db:
                     result = db.execute('UPDATE groups SET '+','.join(k+'=?' for k in changes)+' WHERE id=? AND disconnected=0', [*changes.values(), gid])
                     if not result.rowcount:
-                        raise ValueError('社群不存在')
+                        raise SettingsError('group_id','社群不存在或已解除连接，请刷新社群列表后重试')
                 self.server.store.event(gid, None, '设置更新', '管理员更新了社群规则')
             elif self.path == '/api/revoke':
                 with self.server.store.db() as db:
@@ -712,6 +728,8 @@ class Handler(BaseHTTPRequestHandler):
             self.respond(200, {'ok': True})
         except AccessDenied as error:
             self.respond(403, {'error':str(error)})
+        except SettingsError as error:
+            self.respond(400, {'error':str(error),'field':error.field})
         except (ValueError, KeyError, TypeError) as error:
             message = str(error) if isinstance(error,ValueError) and (self.path.startswith(('/api/admins/','/api/announcements/','/api/groups/','/api/invites/','/api/moderation/')) or self.path == '/api/account/password') else '输入无效，请检查字段、积分范围和图片地址'
             self.respond(400, {'error':message})

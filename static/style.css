@@ -7,3 +7,5 @@
 
 /* Live announcement form */
 .live-ann-form{display:grid;gap:18px;padding-top:10px}.live-ann-form label{display:grid;gap:9px;font-size:13px;color:var(--text,#eceaf4)}.live-ann-form input:not([type=checkbox]),.live-ann-form select,.live-ann-form textarea{width:100%;box-sizing:border-box}.live-ann-form .ann-check{display:flex;align-items:center;gap:10px;line-height:1.6}.ann-check input{width:16px;height:16px;accent-color:#a56cf5}.live-ann-actions{display:flex;flex-wrap:wrap;gap:12px}.live-ann-form section{display:grid;gap:16px}.live-ann-form [hidden]{display:none!important}
+
+.settings-field-error{display:block;color:#ff8999;font-size:12px;line-height:1.6;overflow-wrap:anywhere}#settings-form [aria-invalid="true"]{border-color:#ff8999}

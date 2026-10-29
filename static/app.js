@@ -9,7 +9,7 @@ const pages = {overview:['数据总览','每一份互动都有价值，让社群
 async function api(path, body) {
   const r=await fetch(path, body===undefined ? {} : {method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':csrf},body:JSON.stringify(body)});
   const result=await r.json();
-  if(!r.ok){if(r.status===401 && path!='/api/login')showLogin();throw new Error(result.error || '请求失败');}
+  if(!r.ok){if(r.status===401 && path!='/api/login')showLogin();const error=new Error(result.error || '请求失败');error.status=r.status;error.field=result.field;throw error;}
   return result;
 }
 function toast(text){$('#toast').textContent=text;$('#toast').hidden=false;clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').hidden=true,4500);}
@@ -86,7 +86,20 @@ function render(){
  if(page==='invites'&&data.groups.length){drawInvites();$('#invite-search').addEventListener('input',drawInvites);$('#invite-status').addEventListener('change',drawInvites);}
  if($('#countdown')){const tick=()=>{let seconds=Math.max(0,Math.floor((new Date(data.next_reset)-Date.now())/1000));$('#countdown').textContent=[Math.floor(seconds/3600),Math.floor(seconds/60)%60,seconds%60].map(v=>String(v).padStart(2,'0')).join(':');$('#reset-date').textContent=new Date(data.next_reset).toLocaleDateString('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit'})+' 00:00';};tick();countdownTimer=setInterval(tick,1000);}
 }
-function openSettings(id){const g=data.groups.find(g=>g.id===Number(id));if(!g)return;const f=$('#settings-form');$('#settings-title').textContent=g.title;$('#settings-error').textContent='';$('#moderation-health').textContent='';for(const el of f.elements){if(!el.name)continue;if(el.type==='checkbox')el.checked=!!g[el.name];else el.value=el.name==='group_id'?g.id:el.name==='verify_minutes'?(g.verify_minutes||4):el.name==='welcome_delete_minutes'?(g.welcome_delete_minutes??4):el.name==='link_delete_minutes'?(g.link_delete_minutes??2):g[el.name];}$('#settings-dialog').showModal();}
+function clearSettingsErrors(){
+ const f=$('#settings-form');$('#settings-error').textContent='';
+ f.querySelectorAll('.settings-field-error').forEach(el=>el.remove());
+ for(const el of f.elements){el.removeAttribute('aria-invalid');if(el.getAttribute('aria-describedby')?.startsWith('settings-error-'))el.removeAttribute('aria-describedby');}
+}
+function settingsValue(el){return el.type==='checkbox'?el.checked:el.type==='number'||el.type==='hidden'?Number(el.value):el.value.trim();}
+function openSettings(id){
+ const g=data.groups.find(g=>g.id===Number(id));if(!g)return;
+ const f=$('#settings-form');clearSettingsErrors();$('#settings-title').textContent=g.title;$('#moderation-health').textContent='';
+ const defaults={verify_minutes:4,welcome_delete_minutes:4,link_delete_minutes:2,checkin_points:5,invite_points:20,spam_strikes:2,spam_mute_minutes:1440,block_links:1,block_photos:0,block_ads:1,verify:1,block_mentions:1,block_buttons:1,block_forwards:1,block_sender_chat:1,block_repeats:1,block_flood:1};
+ f._original={};
+ for(const el of f.elements){if(!el.name)continue;const value=el.name==='group_id'?g.id:g[el.name]??defaults[el.name]??'';if(el.type==='checkbox')el.checked=!!value;else el.value=value;f._original[el.name]=settingsValue(el);}
+ $('#settings-dialog').showModal();
+}
 async function loadDisconnected(){
  const result=await api('/api/groups/disconnected');
  $('#disconnected-results').innerHTML=table(['社群','群 ID','操作'],result.groups.map(g=>`<tr><td>${esc(g.title)}</td><td>${g.id}</td><td><button type="button" class="text-button" data-restore-group="${g.id}">恢复连接</button></td></tr>`));
@@ -127,7 +140,16 @@ $('#login-form').addEventListener('submit',async e=>{
  }catch(error){$('#login-error').textContent=error.message||'登录未完成，请重试。';if(setup&&error.status===403)window.updateLoginMode?.();}
  finally{form.dataset.submitting='false';if(button){button.disabled=false;button.removeAttribute('aria-busy');button.innerHTML=form.dataset.mode==='setup'?'创建并进入 <span>↗</span>':'安全登录 <span>↗</span>';}}
 });
-$('#settings-form').addEventListener('submit',async e=>{e.preventDefault();const f=e.currentTarget,body={};for(const el of f.elements){if(!el.name||el.disabled)continue;body[el.name]=el.type==='checkbox'?el.checked:el.type==='number'||el.type==='hidden'?Number(el.value):el.value.trim();}e.submitter.disabled=true;try{await api('/api/settings',body);$('#settings-dialog').close();toast('社群设置已保存，对后续事件生效');await refresh();}catch(err){$('#settings-error').textContent=err.message;}finally{e.submitter.disabled=false;}});
+$('#settings-form').addEventListener('submit',async e=>{
+ e.preventDefault();const f=e.currentTarget,body={group_id:Number(f.elements.group_id.value)},button=e.submitter||f.querySelector('[type=submit]');clearSettingsErrors();
+ for(const el of f.elements){if(!el.name||el.disabled||el.name==='group_id')continue;const value=settingsValue(el);if(value!==f._original?.[el.name])body[el.name]=value;}
+ if(Object.keys(body).length===1){$('#settings-dialog').close();toast('设置没有修改');return;}
+ button.disabled=true;
+ try{await api('/api/settings',body);$('#settings-dialog').close();toast('社群设置已保存，对后续事件生效');await refresh();}
+ catch(err){$('#settings-error').textContent=err.message;const el=err.field?f.elements.namedItem(err.field):null;if(el&&el.type!=='hidden'&&!el.disabled){el.setAttribute('aria-invalid','true');const hint=document.createElement('span');hint.className='settings-field-error';hint.id='settings-error-'+err.field;hint.textContent=err.message;hint.setAttribute('role','alert');el.setAttribute('aria-describedby',hint.id);el.insertAdjacentElement('afterend',hint);el.focus({preventScroll:true});el.scrollIntoView({block:'center'});}}
+ finally{button.disabled=false;}
+});
+$('#settings-form').addEventListener('input',e=>{if(e.target.name){e.target.removeAttribute('aria-invalid');e.target.removeAttribute('aria-describedby');e.target.parentElement?.querySelector('.settings-field-error')?.remove();}});
 $('#spam-preset').onclick=()=>{const f=$('#settings-form');for(const name of ['block_links','block_ads','block_mentions','block_buttons','block_forwards','block_sender_chat','block_repeats','block_flood'])if(!f.elements[name].disabled)f.elements[name].checked=true;if(!f.elements.spam_strikes.disabled)f.elements.spam_strikes.value=2;if(!f.elements.spam_mute_minutes.disabled)f.elements.spam_mute_minutes.value=1440;$('#moderation-health').textContent='推荐规则已填入，点击保存设置后生效；请配置官方账号和管理员提及白名单。';};
 $('#check-bot-permissions').onclick=async e=>{const button=e.currentTarget;button.disabled=true;$('#moderation-health').textContent='正在检查该群的机器人权限…';try{const s=await api('/api/moderation/status',{group_id:Number($('#settings-form').elements.group_id.value)});$('#moderation-health').textContent=`@${s.username} · 管理员：${s.administrator?'是':'否'} · 删除消息：${s.delete_messages?'有':'缺少'} · 限制成员：${s.restrict_members?'有':'缺少'} · 待处理任务：${s.pending_actions}。${s.administrator&&s.delete_messages&&s.restrict_members?'权限检查通过，请用普通成员测试。':'请到该群补齐管理员及删除消息、限制成员权限。'}`;}catch(error){$('#moderation-health').textContent=error.message;}finally{button.disabled=false;}};
 $('#close-settings').onclick=()=>$('#settings-dialog').close();$('#refresh').onclick=refresh;

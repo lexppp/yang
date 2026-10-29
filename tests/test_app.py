@@ -214,7 +214,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn('Alice',params['caption'])
         self.assertIn('Test group',params['caption'])
 
-    def test_english_only_at_telegram_boundary(self):
+    def test_nonwelcome_text_keeps_english_guard_at_telegram_boundary(self):
         from unittest.mock import patch
         api=Telegram('not-a-real-token')
         with patch('urllib.request.urlopen') as request:
@@ -224,19 +224,17 @@ class CoreTests(unittest.TestCase):
             request.assert_not_called()
         self.assertTrue(is_english_text('Welcome! 👋 100 USDT'))
 
-    def test_english_welcome_with_chinese_display_names(self):
+    def test_welcome_preserves_chinese_display_names_and_group_titles(self):
         self.group['title']='官方中文社群'
         self.bot.welcome(self.group,{'first_name':'张三','id':12})
         outgoing=self.api.calls[-1][1]['text']
-        self.assertTrue(is_english_text(outgoing))
-        self.assertIn('new member',outgoing)
-        self.assertIn('the community',outgoing)
+        self.assertIn('张三',outgoing)
+        self.assertIn('官方中文社群',outgoing)
 
-    def test_custom_chinese_welcome_is_not_sent(self):
+    def test_custom_chinese_welcome_is_sent(self):
         self.group['welcome']='欢迎加入，请签到'
-        with self.assertRaises(TelegramError):
-            self.bot.welcome(self.group,self.user)
-        self.assertEqual(self.api.calls,[])
+        self.bot.welcome(self.group,self.user)
+        self.assertEqual(self.api.calls[-1][1]['text'],'欢迎加入，请签到')
 
     def test_admin_moderation_exemption(self):
         original=self.api.call
