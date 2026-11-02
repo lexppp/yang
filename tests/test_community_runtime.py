@@ -113,12 +113,14 @@ class CommunityTests(unittest.TestCase):
         Bot(self.store,self.api).community.process_announcements()
         self.assertEqual(sum(m=='sendMessage' for m,_ in self.api.calls),1)
         self.assertEqual(self.store.snapshot()['announcement_deliveries'][0]['status'],'unknown')
-    def test_chinese_copy_and_unconfirmed_image_are_rejected(self):
-        body=self.plan();body['body']='请参加活动'
-        self.assertRaises(ValueError,self.bot.community.save_announcement,body,{'username':'admin'})
-        body=self.plan();body['image']='photo_fixture'
-        self.assertRaises(ValueError,self.bot.community.save_announcement,body,{'username':'admin'})
-        self.assertEqual(self.api.calls,[])
+    def test_multilingual_copy_and_image_without_language_confirmation_are_accepted(self):
+        body=self.plan();body['body']='请参加活动！ようこそ / Welcome 💜'
+        self.bot.community.save_announcement(body,{'username':'admin'})
+        body=self.plan();body.update(body='日本語の画像付き公告です。欢迎参加！',image='photo_fixture')
+        self.bot.community.save_announcement(body,{'username':'admin'})
+        self.assertEqual(next(p['text'] for m,p in self.api.calls if m=='sendMessage'),'请参加活动！ようこそ / Welcome 💜')
+        self.assertEqual(next(p['caption'] for m,p in self.api.calls if m=='sendPhoto'),'日本語の画像付き公告です。欢迎参加！')
+        self.assertTrue(all(r['status']=='sent' for r in self.store.snapshot()['announcement_deliveries']))
     def test_pause_cancel_and_missed_time(self):
         body=self.plan();body.update(mode='daily',start_date='2030-01-01',times=['09:00'])
         pid=self.bot.community.save_announcement(body,{'username':'admin'})['id']

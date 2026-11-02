@@ -64,17 +64,17 @@ with tempfile.TemporaryDirectory() as directory:
             f=page.locator('#live-announcement-form')
             expect(f).to_be_visible()
             f.locator('[name=title]').fill('Community news')
-            f.locator('[name=body]').fill('Hello CoinW community! This is a scheduled community update.')
+            f.locator('[name=body]').fill('🎁 CoinW 社群邀请活动开启！ようこそ / Welcome 💜')
             f.locator('[name=topic_id]').fill('123')
             f.locator('[name=image]').fill('photo_id_test_fixture')
-            f.locator('[name=image_english_confirmed]').check()
+            assert f.locator('[name=image_english_confirmed]').count()==0
             f.locator('[data-activate="1"]').click()
             expect(page.locator('#content')).to_contain_text('已发送')
-            assert any(m=='sendPhoto' and params['message_thread_id']==123 for m,params in api.calls)
+            assert any(m=='sendPhoto' and params['message_thread_id']==123 and params['caption']=='🎁 CoinW 社群邀请活动开启！ようこそ / Welcome 💜' for m,params in api.calls)
             assert any(m=='pinChatMessage' for m,_ in api.calls)
             # Daily multi-slot plans are persisted; browser code does not run the scheduler.
             f.locator('[name=title]').fill('Daily reminders')
-            f.locator('[name=body]').fill('Check in with coinw and earn your daily points!')
+            f.locator('[name=body]').fill('毎日 coinw を送信してチェックインしましょう！')
             f.locator('[name=mode]').select_option('daily')
             f.locator('[name=start_date]').fill('2030-01-01')
             page.locator('#ann-frequency').select_option('2')
@@ -82,11 +82,11 @@ with tempfile.TemporaryDirectory() as directory:
             expect(page.locator('#content')).to_contain_text('每天 2 次')
             page.locator('[data-ann-action=pause]').first.click()
             expect(page.locator('#content')).to_contain_text('已暂停')
-            # Backend English guard is visible to the operator.
+            # Empty content still receives a useful validation error in any language.
             f.locator('[name=title]').fill('Language check')
-            f.locator('[name=body]').fill('欢迎参加活动')
+            f.locator('[name=body]').fill('   ')
             f.locator('[data-activate="1"]').click()
-            expect(page.locator('#ann-error')).to_contain_text('must use English')
+            expect(page.locator('#ann-error')).to_contain_text('公告字段无效：body')
             page.set_viewport_size({'width':390,'height':844})
             assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
             output=root/'data/community-update';output.mkdir(parents=True,exist_ok=True)
@@ -95,6 +95,6 @@ with tempfile.TemporaryDirectory() as directory:
             page.screenshot(path=str(output/'announcement-desktop.png'),full_page=True)
             assert not errors,errors
             browser.close()
-            print('PASS: real login, verification and welcome/link cleanup settings UI/save/reopen, spam presets/permissions/settings, announcement nav/form, photo + topic + pin API calls, multi-slot schedule, pause, English validation, mobile overflow. No real Telegram calls.')
+            print('PASS: real login, verification and welcome/link cleanup settings UI/save/reopen, spam presets/permissions/settings, announcement nav/form, photo + topic + pin API calls, multi-slot schedule, pause, multilingual photo/text and empty-body validation, mobile overflow. No real Telegram calls.')
     finally:
         server.shutdown();server.server_close();worker.join()

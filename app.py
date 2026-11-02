@@ -213,10 +213,10 @@ class Telegram:
     def __init__(self, token):
         self.token = token
 
-    def call(self, method, *, _welcome=False, **params):
-        # Welcome templates are per-group Unicode content, not the language of system commands.
-        # Consume this private option here; it must never be sent to Telegram as an API field.
-        if not (_welcome is True and method in ('sendMessage','sendPhoto')):
+    def call(self, method, *, _welcome=False, _announcement=False, **params):
+        # User-authored welcomes/announcements are Unicode content, independent of system text.
+        # Consume private options here; never send them to Telegram as API fields.
+        if not ((_welcome is True or _announcement is True) and method in ('sendMessage','sendPhoto')):
             validate_telegram_text(params)
         req = urllib.request.Request('https://api.telegram.org/bot'+self.token+'/'+method,
                                      data=json.dumps(params).encode(), headers={'Content-Type': 'application/json'})
@@ -247,11 +247,11 @@ class Bot:
         self.community = CommunityRuntime(self,is_english_text)
         self.guard = SpamGuard(self)
 
-    def send(self, gid, text, *, _welcome=False, **kwargs):
-        if _welcome:
-            kwargs['_welcome']=True
-        else:
+    def send(self, gid, text, *, _welcome=False, _announcement=False, **kwargs):
+        if not (_welcome or _announcement):
             validate_telegram_text({'text': text, **kwargs})
+        if _welcome:kwargs['_welcome']=True
+        if _announcement:kwargs['_announcement']=True
         return self.api.call('sendMessage', chat_id=gid, text=text, **kwargs)
 
     def invite(self, gid, user):
@@ -704,7 +704,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not (valid_url or re.fullmatch(r'[A-Za-z0-9_-]+', photo)):
                         raise SettingsError('welcome_photo','欢迎图片请填写完整HTTPS图片地址或Telegram file_id；不填图片可以留空')
                 if 'language' in changes and changes['language'] != 'en':
-                    raise SettingsError('language','系统提示语言目前为英文；欢迎词可直接填写中文、日文或英文，无需修改系统语言')
+                    raise SettingsError('language','系统提示语言目前为英文；欢迎词和公告可直接填写多语言，无需修改系统语言')
                 with self.server.store.db() as db:
                     result = db.execute('UPDATE groups SET '+','.join(k+'=?' for k in changes)+' WHERE id=? AND disconnected=0', [*changes.values(), gid])
                     if not result.rowcount:

@@ -1,24 +1,24 @@
-/* Real server-persisted announcements. The server validates permissions and English output. */
+/* Real server-persisted announcements. The server validates permissions and supports multilingual content. */
 (() => {
 pages.announcements=['公告管理','图文公告、指定话题、定时发布与每日多时段，任务由服务器持续执行。'];
 const nav=document.createElement('button');nav.className='nav-item';nav.dataset.page='announcements';nav.innerHTML='<span>◩</span> 公告管理';document.querySelector('nav').append(nav);
 const localInput=ms=>new Date(ms+28800000).toISOString().slice(0,16);
 const today=()=>localInput(Date.now()).slice(0,10);
-const fresh=()=>({id:null,title:'',group_id:Number(group)||data.groups[0]?.id,topic_id:'',body:'',image:'',image_english_confirmed:false,pin:true,mode:'now',once_at:localInput(Date.now()+3600000),times:['09:00','15:00','21:00'],start_date:today(),end_date:''});
+const fresh=()=>({id:null,title:'',group_id:Number(group)||data.groups[0]?.id,topic_id:'',body:'',image:'',pin:true,mode:'now',once_at:localInput(Date.now()+3600000),times:['09:00','15:00','21:00'],start_date:today(),end_date:''});
 const states={draft:'草稿',scheduled:'已启用',paused:'已暂停',completed:'本轮已处理',cancelled:'已取消'};
 const outcomes={sending:'发送结果待确认',sent:'已发送',sent_pin_failed:'已发送，置顶失败',unknown:'发送未确认，请到群里核对',missed:'已错过，未补发'};
 let draft=null,busy=false;
 const manage=()=>accessAllowed(currentUser,'announcements.manage');
-function capture(){const f=$('#live-announcement-form');if(!f||!draft)return;for(const key of ['title','body','image','once_at','start_date','end_date','mode'])draft[key]=f.elements[key].value;draft.group_id=Number(f.elements.group_id.value);draft.topic_id=f.elements.topic_id.value;draft.pin=f.elements.pin.checked;draft.image_english_confirmed=f.elements.image_english_confirmed.checked;draft.times=[...f.querySelectorAll('[data-ann-time]')].map(i=>i.value);}
+function capture(){const f=$('#live-announcement-form');if(!f||!draft)return;for(const key of ['title','body','image','once_at','start_date','end_date','mode'])draft[key]=f.elements[key].value;draft.group_id=Number(f.elements.group_id.value);draft.topic_id=f.elements.topic_id.value;draft.pin=f.elements.pin.checked;draft.times=[...f.querySelectorAll('[data-ann-time]')].map(i=>i.value);}
 function times(){return draft.times.map((v,i)=>`<label>第 ${i+1} 次<input type="time" data-ann-time value="${esc(v)}" required></label>`).join('');}
 function topicOptions(){return (data.forum_topics||[]).filter(t=>t.group_id===Number(draft.group_id)).map(t=>`<option value="${t.topic_id}">${esc(t.name)}</option>`).join('');}
 function screen(){
  draft=draft||fresh();const d=draft, plans=data.announcements||[],history=data.announcement_deliveries||[];
- const editor=manage()?panel('◩ 创建公告','正文仅发送英文，任务和发布记录保存在服务器。',`<form id="live-announcement-form" class="live-ann-form">
+ const editor=manage()?panel('◩ 创建公告','支持中文、日文、英文等语言，任务和发布记录保存在服务器。',`<form id="live-announcement-form" class="live-ann-form">
  <div class="form-grid"><label>后台名称（仅后台可见）<input name="title" maxlength="100" value="${esc(d.title)}" required></label><label>目标社群<select name="group_id" required>${data.groups.map(g=>`<option value="${g.id}" ${g.id===Number(d.group_id)?'selected':''}>${esc(g.title)}</option>`).join('')}</select></label></div>
  <label>话题 ID（留空为默认聊天）<input name="topic_id" type="number" min="1" list="ann-topic-list" value="${esc(d.topic_id||'')}" placeholder="例如 123"><datalist id="ann-topic-list">${topicOptions()}</datalist></label><p class="form-hint">机器人观察到的话题会出现在候选项。若目标话题尚未记录，在话题里发一条消息并刷新看板；也可手填话题 ID（不要填链接最后的消息 ID）。普通群留空。</p>
- <label>英文公告正文<textarea name="body" rows="6" maxlength="4096" required placeholder="Hello CoinW community! Join our latest event.">${esc(d.body)}</textarea></label>
- <label>公告图片（可选）<input name="image" maxlength="1000" value="${esc(d.image)}" placeholder="HTTPS 图片直链，或私聊机器人发送照片取得的 file_id"></label><label class="ann-check"><input name="image_english_confirmed" type="checkbox" ${d.image_english_confirmed?'checked':''}> 图片为英文或无文字；系统不识别图片内文字。有图片时正文最多1024字。</label>
+ <label>公告正文（支持多语言）<textarea name="body" rows="6" maxlength="4096" required placeholder="输入公告正文，可使用中文、日文、英文或其他语言。">${esc(d.body)}</textarea></label>
+ <label>公告图片（可选）<input name="image" maxlength="1000" value="${esc(d.image)}" placeholder="HTTPS 图片直链，或私聊机器人发送照片取得的 file_id"></label><p class="form-hint">图片支持任意语言，无需语言确认；系统不识别图片内文字。有图片时正文最多1024字，纯文字最多4096字。</p>
  <label class="ann-check"><input name="pin" type="checkbox" ${d.pin?'checked':''}> 发布后置顶（机器人需有置顶权限）</label>
  <div class="form-grid"><label>发布方式<select name="mode"><option value="now" ${d.mode==='now'?'selected':''}>立即发送</option><option value="once" ${d.mode==='once'?'selected':''}>定时一次</option><option value="daily" ${d.mode==='daily'?'selected':''}>每天重复</option></select></label><label id="ann-once" ${d.mode==='once'?'':'hidden'}>发布时间（UTC+8）<input name="once_at" type="datetime-local" value="${esc(d.once_at)}" ${d.mode==='once'?'required':''}></label></div>
  <section id="ann-daily" ${d.mode==='daily'?'':'hidden'}><div class="form-grid"><label>开始日期<input name="start_date" type="date" value="${esc(d.start_date)}"></label><label>结束日期（可选）<input name="end_date" type="date" value="${esc(d.end_date||'')}"></label></div><label>每天发送次数<select id="ann-frequency">${Array.from({length:24},(_,i)=>`<option value="${i+1}" ${d.times.length===i+1?'selected':''}>${i+1} 次</option>`).join('')}</select></label><div class="form-grid" id="ann-times">${times()}</div></section>
@@ -42,7 +42,7 @@ document.addEventListener('submit',async e=>{
 document.addEventListener('click',async e=>{
  const b=e.target.closest('button');if(!b)return;
  if(b.id==='ann-reset'){draft=fresh();render();}
- if(b.dataset.annEdit){const p=data.announcements.find(p=>p.id===Number(b.dataset.annEdit));draft={...p,image_english_confirmed:!!p.image,once_at:p.once_at?localInput(new Date(p.once_at).getTime()):localInput(Date.now()+3600000)};render();}
+ if(b.dataset.annEdit){const p=data.announcements.find(p=>p.id===Number(b.dataset.annEdit));draft={...p,once_at:p.once_at?localInput(new Date(p.once_at).getTime()):localInput(Date.now()+3600000)};render();}
  if(b.dataset.annAction){b.disabled=true;try{await api('/api/announcements/'+b.dataset.annAction,{id:Number(b.dataset.annId)});await refresh();toast('公告状态已更新');}catch(error){toast(error.message);}finally{b.disabled=false;}}
 });
 })();

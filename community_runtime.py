@@ -405,10 +405,8 @@ class CommunityRuntime:
                 raise ValueError('公告字段无效：'+key)
             return value.strip()
         title=text('title',100,True);content=text('body',4096,True);image=text('image',1000)
-        if not self.english(content):
-            raise ValueError('Telegram announcement text must use English.')
-        if image and (not (image.startswith('https://') or re.fullmatch(r'[\w-]+',image)) or len(content)>1024 or body.get('image_english_confirmed') is not True):
-            raise ValueError('图片须为 HTTPS 地址或 /fileid，图文正文最多1024字，并确认图片为英文或无文字')
+        if image and (not (image.startswith('https://') or re.fullmatch(r'[A-Za-z0-9_-]+',image)) or len(content)>1024):
+            raise ValueError('图片须为HTTPS地址或Telegram file_id，图文正文最多1024字；图片和正文均不限语言')
         gid=int(body['group_id']);topic=body.get('topic_id') or None
         if topic is not None and (type(topic) is not int or topic<1):
             raise ValueError('话题 ID 须为正整数')
@@ -498,9 +496,9 @@ class CommunityRuntime:
                         if plan['topic_id']:
                             params['message_thread_id']=plan['topic_id']
                         if plan['image']:
-                            result=self.bot.api.call('sendPhoto',photo=plan['image'],caption=plan['body'],**params)
+                            result=self.bot.api.call('sendPhoto',photo=plan['image'],caption=plan['body'],_announcement=True,**params)
                         else:
-                            result=self.bot.send(plan['group_id'],plan['body'],**({'message_thread_id':plan['topic_id']} if plan['topic_id'] else {}))
+                            result=self.bot.send(plan['group_id'],plan['body'],_announcement=True,**({'message_thread_id':plan['topic_id']} if plan['topic_id'] else {}))
                         message_id=result['message_id']
                         with self.store.db() as db:
                             db.execute("UPDATE announcement_deliveries SET message_id=?,status='sent' WHERE plan_id=? AND scheduled_at=?",(message_id,plan['id'],due))
