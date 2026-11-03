@@ -26,6 +26,7 @@ from community_runtime import CommunityRuntime, initialize as initialize_communi
 from group_links import initialize as initialize_links, resolve as resolve_group, migrate as migrate_group, visible_sql, disconnect as disconnect_group
 from moderation import initialize as initialize_moderation, moderation_reason, SpamGuard, SETTINGS as MODERATION_SETTINGS, BOOL_DEFAULTS as MODERATION_SWITCHES
 from engagement import initialize as initialize_engagement, ChatRewards, SETTINGS as CHAT_REWARD_SETTINGS
+from sync_status import snapshot as sync_snapshot
 
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
@@ -542,6 +543,8 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         path = urllib.parse.urlsplit(self.path)
+        if path.path == '/sync.js':
+            return self.respond(200, (ROOT/'static'/'sync.js').read_bytes(), 'text/javascript; charset=utf-8')
         if path.path in ('/', '/style.css', '/app.js', '/access.js', '/access.css', '/access-policy.js', '/live-announcements.js'):
             name = {'/': 'index.html', '/style.css': 'style.css', '/app.js': 'app.js', '/access.js':'access.js', '/access.css':'access.css', '/access-policy.js':'access-policy.js', '/live-announcements.js':'live-announcements.js'}[path.path]
             mime = {'index.html':'text/html; charset=utf-8','style.css':'text/css; charset=utf-8','app.js':'text/javascript; charset=utf-8','access.js':'text/javascript; charset=utf-8','access.css':'text/css; charset=utf-8','access-policy.js':'text/javascript; charset=utf-8', 'live-announcements.js':'text/javascript; charset=utf-8'}[name]
@@ -564,6 +567,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(403, {'error':str(error)})
         if any(not allowed(session['user'],p) for p in required_permissions(path.path)):
             return self.respond(403, {'error':'无权执行此操作'})
+        if path.path == '/api/sync/status':
+            return self.respond(200, sync_snapshot())
         if path.path == '/api/groups/disconnected':
             with self.server.store.db() as db:
                 rows=[dict(r) for r in db.execute('SELECT id,title,chat_type FROM groups WHERE disconnected=1 AND id NOT IN (SELECT old_id FROM group_migrations) ORDER BY title')]

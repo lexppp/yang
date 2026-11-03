@@ -159,4 +159,4 @@ $('#logout').onclick=logout;$('#logout-mobile').onclick=logout;
 window.addEventListener('hashchange',()=>{const next=location.hash.slice(1);if(pages[next]&&next!==page){page=next;if(data)render();}});
 page=pages[location.hash.slice(1)]?location.hash.slice(1):'overview';
 api('/api/session').then(enter).catch(showLogin);
-setInterval(()=>{if(csrf&&!document.hidden&&!$('#settings-dialog').open&&!$('#invite-search')?.value&&!document.querySelector('#live-announcement-form:focus-within'))refresh();},15000);
+setInterval(()=>{if(csrf&&!document.hidden&&!$('#settings-dialog').open&&!$('#invite-search')?.value&&!document.querySelector('#live-announcement-form:focus-within')&&!document.querySelector('#sync-search:focus'))refresh();},15000);

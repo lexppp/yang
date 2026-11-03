@@ -17,6 +17,7 @@ PERMISSIONS = {
     'draws.view': '查看抽奖', 'draws.manage': '管理与发布抽奖',
     'announcements.view': '查看公告', 'announcements.manage': '编辑与发布公告',
     'logs.view': '查看活动日志',
+    'sync.view': '查看 X → Telegram 同步',
 }
 DEPENDENCIES = {p: p.split('.')[0]+'.view' for p in PERMISSIONS if not p.endswith('.view')}
 
@@ -58,6 +59,8 @@ def allowed(user, permission):
 
 
 def required_permissions(path, body=None):
+    if path == '/api/sync/status':
+        return ['sync.view']
     if path == '/api/moderation/status':
         return ['groups.manage']
     if path in ('/api/groups/disconnect','/api/groups/restore','/api/groups/disconnected'):

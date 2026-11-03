@@ -1,8 +1,9 @@
 /* Account management and UI access controls, shared by server UI and standalone preview. */
 let accountCache=null,accountAudit=[],accountBusy=false;
-window.onAccessLogout=()=>{accountCache=null;accountAudit=[];};
+const priorAccessLogout=window.onAccessLogout;
+window.onAccessLogout=()=>{accountCache=null;accountAudit=[];priorAccessLogout?.();};
 const can=p=>accessAllowed(currentUser,p);
-const permissionGroups=[['dashboard','数据总览','◈'],['groups','社群管理','▦'],['points','积分管理','✧'],['invites','邀请管理','↗'],['draws','Lucky Draw','♜'],['announcements','公告管理','◩'],['logs','活动日志','≡']];
+const permissionGroups=[['dashboard','数据总览','◈'],['groups','社群管理','▦'],['points','积分管理','✧'],['invites','邀请管理','↗'],['draws','Lucky Draw','♜'],['announcements','公告管理','◩'],['logs','活动日志','≡'],['sync','X → Telegram 同步','⇄']];
 pages.accounts=['管理员与权限','由超级管理员集中管理账号，按职责授予所需功能。'];pages.restricted=['等待授权','你的账号尚未分配可使用的功能，请联系超级管理员。'];
 const accountsNav=document.createElement('button');accountsNav.className='nav-item';accountsNav.dataset.page='accounts';accountsNav.innerHTML='<span>♙</span> 管理员与权限';document.querySelector('nav').appendChild(accountsNav);
 $('#login-form').insertAdjacentHTML('afterbegin','<div class="auth-role-tag">AUTHORIZED ACCESS ONLY</div>');

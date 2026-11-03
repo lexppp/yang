@@ -145,7 +145,7 @@ class InstallerTests(unittest.TestCase):
             def run(args, **kwargs):
                 commands.append(args)
                 return 'rsshub-trial' if 'inspect' in args else 'ok'
-            with patch.object(installer, 'ROOT', root), patch.object(installer, 'STATE', state), patch.object(installer, 'UNITS', units), patch.object(installer, 'health'), patch.object(installer, 'existing_token', return_value='123:private'), patch.object(installer.Path, 'is_file', return_value=True), patch.object(installer, 'run', side_effect=run), patch.object(installer.subprocess, 'run', return_value=subprocess.CompletedProcess([], 3)):
+            with patch.object(installer, 'ROOT', root), patch.object(installer, 'STATE', state), patch.object(installer, 'PUBLIC_DIR', Path(directory)/'public'), patch.object(installer, 'UNITS', units), patch.object(installer, 'health'), patch.object(installer, 'existing_token', return_value='123:private'), patch.object(installer.Path, 'is_file', return_value=True), patch.object(installer, 'run', side_effect=run), patch.object(installer.subprocess, 'run', return_value=subprocess.CompletedProcess([], 3)):
                 installer.install()
                 # Repeated installation keeps DB initialization idempotent in worker.
                 installer.install()

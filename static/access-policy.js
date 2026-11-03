@@ -6,11 +6,12 @@ window.ACCESS_POLICY={
  'invites.view':'查看邀请','invites.manage':'撤销邀请链接','invites.export':'导出邀请 Excel','invites.attribute':'补记邀请（含积分奖励）',
  'draws.view':'查看抽奖','draws.manage':'管理与发布抽奖',
  'announcements.view':'查看公告','announcements.manage':'编辑与发布公告',
- 'logs.view':'查看活动日志'
+ 'logs.view':'查看活动日志','sync.view':'查看 X → Telegram 同步'
 };
-window.ACCESS_PAGES={overview:'dashboard.view',groups:'groups.view',ranking:'points.view',points:'points.configure',invites:'invites.view',draws:'draws.view',announcements:'announcements.view',logs:'logs.view',accounts:'admins.manage'};
+window.ACCESS_PAGES={overview:'dashboard.view',groups:'groups.view',ranking:'points.view',points:'points.configure',invites:'invites.view',draws:'draws.view',announcements:'announcements.view',logs:'logs.view',accounts:'admins.manage',sync:'sync.view'};
 window.accessAllowed=(user,p)=>!!user&&(user.role==='superadmin'||(user.permissions||[]).includes(p));
 window.accessRequirements=(path,body={})=>{
+ if(path==='/api/sync/status')return ['sync.view'];
  if(['/api/groups/disconnect','/api/groups/restore','/api/groups/disconnected'].includes(path))return ['groups.disconnect'];
  if(path==='/api/invites/attribute')return ['invites.attribute'];
  if(path==='/api/moderation/status')return ['groups.manage'];

@@ -13,6 +13,7 @@ import urllib.request
 
 ROOT = Path('/opt/coinw-x-forward')
 STATE = Path('/var/lib/coinw-x-forward')
+PUBLIC_DIR = Path('/var/lib/coinw-x-status')
 UNITS = Path('/etc/systemd/system')
 MARKER = '# Managed by CoinW X forward installer v1\n'
 SERVICE = MARKER + '''[Unit]
@@ -31,7 +32,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
-ReadWritePaths=/var/lib/coinw-x-forward
+ReadWritePaths=/var/lib/coinw-x-forward /var/lib/coinw-x-status
 CapabilityBoundingSet=
 MemoryMax=128M
 '''
@@ -112,6 +113,8 @@ def install():
     print(run(['/usr/bin/python3', str(source), 'preflight'], env=environment))
     ROOT.mkdir(mode=0o755, exist_ok=True)
     STATE.mkdir(mode=0o700, exist_ok=True)
+    PUBLIC_DIR.mkdir(mode=0o755, exist_ok=True)
+    PUBLIC_DIR.chmod(0o755)
     if ROOT.is_symlink() or STATE.is_symlink():
         raise ValueError('Install and state paths must be real directories.')
     # Quiesce only this component during upgrades. Never stop the main bot or RSSHub.

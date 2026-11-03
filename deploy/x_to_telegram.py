@@ -11,6 +11,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -22,6 +24,7 @@ CHANNEL = '@coinwofficialchannel'
 BOT = 'CoinWCommunityHubBot'
 FEED = 'http://127.0.0.1:1200/twitter/user/' + ACCOUNT
 STATE = Path('/var/lib/coinw-x-forward')
+PUBLIC = Path('/var/lib/coinw-x-status/status.json')
 
 
 class Failure(Exception):
@@ -250,6 +253,7 @@ def cycle(db, posts, call, now):
                 db.execute("UPDATE deliveries SET status='sent',message_id=? WHERE post_id=? AND part=?", (result['message_id'], row['id'], index))
         with db:
             db.execute("UPDATE posts SET status='sent' WHERE id=?", (row['id'],))
+            put(db, 'last_delivery', time.time())
         print('Forwarded post ' + row['id'], flush=True)
 
 
@@ -291,6 +295,7 @@ def main():
                     return
                 with db:
                     put(db, 'next_fetch', now + 600)
+                    put(db, 'last_check', now)
                 try:
                     posts = fetch_feed()
                 except Failure:
@@ -303,14 +308,61 @@ def main():
                     put(db, 'feed_failures', 0)
                 preflight(call)
                 cycle(db, posts, call, now)
+                with db:
+                    put(db, 'last_success', time.time())
+                    put(db, 'last_error', '')
                 print('Feed check completed.', flush=True)
+
+
+def publish_status(error=None):
+    """Publish only curated public-post metadata, never credentials or raw responses."""
+    if not (STATE / 'forward.sqlite3').is_file():
+        return
+    with closing(connect(STATE / 'forward.sqlite3')) as db:
+        if error:
+            with db:
+                put(db, 'last_error', error)
+                put(db, 'last_error_at', time.time())
+        report = {'version': 1, 'updated_at': time.time(), 'source': ACCOUNT, 'channel': CHANNEL,
+                  'bot': BOT, 'interval_seconds': 600,
+                  'counts': dict(db.execute('SELECT status,COUNT(*) FROM posts GROUP BY status').fetchall()),
+                  'delivery_counts': dict(db.execute('SELECT status,COUNT(*) FROM deliveries GROUP BY status').fetchall()),
+                  'posts': []}
+        for key in ('enabled_at', 'last_check', 'last_success', 'last_delivery', 'next_fetch', 'next_send', 'last_error_at'):
+            report[key] = float(get(db, key))
+        report['last_error'] = get(db, 'last_error', '')
+        for row in db.execute('SELECT * FROM posts ORDER BY CAST(id AS INTEGER) DESC LIMIT 100'):
+            post = json.loads(row['payload'])
+            deliveries = [dict(item) for item in db.execute('SELECT part,status,message_id FROM deliveries WHERE post_id=? ORDER BY part', (row['id'],))]
+            report['posts'].append({'id': row['id'], 'published': post['published'], 'text': post['text'][:1200],
+                                    'images': len(post['images']), 'status': row['status'], 'deliveries': deliveries})
+    PUBLIC.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    PUBLIC.parent.chmod(0o755)
+    fd, filename = tempfile.mkstemp(dir=PUBLIC.parent, prefix='.status-')
+    try:
+        with os.fdopen(fd, 'w') as output:
+            os.fchmod(output.fileno(), 0o644)
+            json.dump(report, output, ensure_ascii=False)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(filename, PUBLIC)
+    finally:
+        Path(filename).unlink(missing_ok=True)
 
 
 if __name__ == '__main__':
     os.umask(0o077)
+    failure = None
     try:
         main()
     except (Failure, OSError, ValueError, sqlite3.Error) as error:
         # API errors can include token-bearing URLs. Never print arbitrary exceptions.
-        print('Stopped: ' + (str(error) if isinstance(error, Failure) else 'local_runtime_error'), flush=True)
+        failure = str(error) if isinstance(error, Failure) else 'local_runtime_error'
+        print('Stopped: ' + failure, flush=True)
         raise SystemExit(1)
+    finally:
+        if len(sys.argv) > 1 and sys.argv[1] in ('run', 'initialize'):
+            try:
+                publish_status(failure)
+            except (OSError, ValueError, sqlite3.Error):
+                print('Status report could not be published.', flush=True)
