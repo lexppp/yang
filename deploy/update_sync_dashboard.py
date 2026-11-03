@@ -14,9 +14,9 @@ import tempfile
 import time
 import urllib.request
 
-SOURCE_REVISION = 'TO_BE_PINNED'
-FILES = {}
-FORWARD_FILES = {}
+SOURCE_REVISION = 'bedf5639c64e22cefb1ba42f12b072412941c182'
+FILES = {'app.py': '9183f4ae73270e318ab9707bd9937321157252981968ef8f36927c309c1840a8', 'auth.py': 'a178a8bfe314a8723424dde6d5029f121c3cb2ccd089b75e45351abcfbe22505', 'sync_status.py': '913f47ca43c35daf5e339af6595003a1a34693210c74afc27d8138698f1304af', 'community_runtime.py': '9cf59d84f51068070000876d8f7de85f52f702a589bfe2e4478093e637044d85', 'group_links.py': '31e69bccad9303718213d101c3c0a11ad1fa9133454a6068476bd5b981c28cca', 'moderation.py': '2bfb59db8f9a42a935268230432d2a6f3b15d111350ec143f7e6daa3c8dc09c1', 'engagement.py': '0343d48bfce234b300886406890e1d98045f2a5d70e97b0b7bd97842192c2622', 'static/index.html': '852217d8b5de19253357aa8f1fe95810c9156c659d63b070c50f18d78fd475a3', 'static/app.js': 'e4dc753734d4b557977e6aeb27e0852a98d12df58f06ab84162dd07f9797cbe5', 'static/access.js': 'e0b4657e7f290ce57543a36e6bb95bc14149d7d5da59ef39d98736b0322c6fee', 'static/access-policy.js': '4f520a3286233cc53158470349daebc95004725c6e6b0f8f98e54c7697898887', 'static/access.css': '247bbf01384c228ebb33d1c895e9fddf505175480319356e0c0abcbe6364c212', 'static/style.css': 'cc9a64ebf3e76af253d7cd244e54d9ea01aa16cb80448a4fe48084ec4d899bfb', 'static/live-announcements.js': '6e9a85d404e2de408e201835adc274584541e498c1a51e119c2d3e930b66dfc0', 'static/sync.js': '4948ecc9aec483633ed747739d244feb2da8f026fd1f14a1209a884472f5a58d'}
+FORWARD_FILES = {'install_x_forward.py': '6407ef31c761a06eff1c406f8ebdc37e8b352cbfc6ad3e040a5bd2a636aaabde', 'x_to_telegram.py': '0836f87d3107a0f7a55efd9ea8cc8bc49bc3e1505651d86c60701712a4616b87'}
 APP_ROOT = Path('/opt/coinw')
 BACKUPS = Path('/var/lib/coinw/code-backups')
 CONFIG = Path('/etc/coinw/coinw.env')
