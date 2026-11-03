@@ -64,3 +64,35 @@ sudo python3 /home/ubuntu/setup_rsshub_trial.py stop
 只检查带本工具标签的`coinw-rsshub-trial`容器，不打印容器环境变量/日志或服务器配置。`stop`仅删除此容器，保留Docker和镜像。
 
 开发环境已用此官方镜像实际启动并清理无凭证容器，确认非root/只读目录/资源限制可以运行，`/healthz`返回`ok`；一次启动占用约197MiB。该占用是无凭证启动快照，不是X读取负载或用户服务器上的实测。仍需用户实际服务器完成试跑、再在自己服务器隐藏输入登录态并测试X来源，最后才接TG发布。
+
+## 登录态配置与只读推文验证
+
+用户随后提供的实际服务器截图确认：Docker安装及镜像拉取完成，RSSHub与原CoinW健康检查通过，容器running、内存约222MiB/768MiB。**尚未验证X读取**。
+
+更新后的同一个独立脚本支持：
+
+```bash
+sudo python3 /home/ubuntu/setup_rsshub_trial.py login
+```
+
+前提是已有本工具的健康试跑容器。脚本复核原机器人及资源，在交互式终端隐藏提示输入`auth_token`。在自己有权使用的X账号登录浏览器中，Chrome开发者工具「应用/Application → 存储/Storage → Cookie → https://x.com」可找到名为`auth_token`的Cookie；只在终端出现隐藏输入提示后，复制该Cookie的值并粘贴、回车。不需要官方账号密码，也不是BotFather Token。拒绝非交互终端、无法隐藏的输入、整段Cookie或格式不符的值。不要把浏览器Cookie页面、Token或服务器配置发到聊天里。
+
+登录态相当于账号凭证，仅保存到本机root拥有的`/etc/coinw-rsshub`（700目录）下`x.env`（原子写入、600文件），通过`--env-file`交给Docker，不出现在命令行值或脚本输出中。Docker管理员仍有权限读取容器环境，所以不要分享`docker inspect`或配置内容。容器日志保持禁用，不启用自动重启。脚本只重建自己创建的RSSHub容器，保留相同资源及访问限制，不修改原机器人。
+
+启动健康通过后，**只请求一次**本机`/twitter/user/CoinWOfficial`，最大2MB、超时60秒，拒绝实体/DOCTYPE，核对X账号链接、数字帖子ID、正文或图片引用及发布时间，输出最多三条公开帖子预览。健康检查或HTTP200本身不能判断为读取成功；旧帖子/缺日期/验证页面不能判断为近期来源。上游失败不显示原始响应，避免泄露请求中的凭证。错误需区分登录失效、验证、限流或RSSHub接口变动，不能仅凭HTTP500断言Cookie输错。
+
+之后可在至少10分钟后运行一次：
+
+```bash
+sudo python3 /home/ubuntu/setup_rsshub_trial.py check
+```
+
+本地持久化上次读取时间，阻止10分钟内重复请求；没有轮询服务。下一条真实新帖发布后再次检查并与X原帖对照，才能评估更新延迟、正文/媒体完整性。登录态失效或出现访问验证时暂停，按正常登录流程处理，不绕过挑战或轮换账号。
+
+停止只删除容器、保留登录态；要同时删除本工具保存的登录态：
+
+```bash
+sudo python3 /home/ubuntu/setup_rsshub_trial.py forget
+```
+
+此命令只移除带本工具标签的RSSHub容器及`x.env`，不注销其他X会话。需要让该登录态失效时，在X账号安全设置中结束对应会话。**当前仍无X→TG自动发布功能，也未请求或使用Telegram Token。**

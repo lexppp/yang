@@ -1,6 +1,10 @@
 from pathlib import Path
+from datetime import datetime, timezone
+import getpass
 import importlib.util
+import io
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -67,6 +71,66 @@ class RsshubTrialTests(unittest.TestCase):
         for body, expected in ((b'ok', True), (b'<html>login</html>', False)):
             with self.subTest(body=body), patch.object(trial.HTTP, 'open', return_value=Response(body)):
                 self.assertEqual(trial.rsshub_ok(), expected)
+
+    def test_login_never_places_cookie_in_docker_arguments(self):
+        args = trial.start_args(authenticated=True)
+        self.assertEqual(args[args.index('--env-file') + 1], str(trial.PRIVATE / 'x.env'))
+        self.assertNotIn('TWITTER_AUTH_TOKEN', ' '.join(args))
+
+    def test_hidden_input_refuses_echo_fallback_and_invalid_values(self):
+        with patch.object(trial.sys.stdin, 'isatty', return_value=False), patch.object(trial.getpass, 'getpass') as prompt:
+            with self.assertRaises(trial.TrialError):
+                trial.hidden_token()
+            prompt.assert_not_called()
+        for value in ('not-a-cookie', 'BotFather:token', 'a' * 40 + '\nNODE_OPTIONS=bad'):
+            with patch.object(trial.sys.stdin, 'isatty', return_value=True), patch.object(trial.getpass, 'getpass', return_value=value):
+                with self.assertRaises(trial.TrialError) as error:
+                    trial.hidden_token()
+                self.assertNotIn(value, str(error.exception))
+        with patch.object(trial.sys.stdin, 'isatty', return_value=True), patch.object(trial.getpass, 'getpass', side_effect=getpass.GetPassWarning('private')):
+            with self.assertRaises(trial.TrialError):
+                trial.hidden_token()
+
+    def test_credentials_are_written_atomically_with_private_permissions(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(trial, 'PRIVATE', Path(folder)), patch.object(trial, 'private_dir'):
+            trial.write_private('x.env', 'synthetic-test\n')
+            target = Path(folder) / 'x.env'
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(target.read_text(), 'synthetic-test\n')
+            self.assertEqual(len(list(Path(folder).iterdir())), 1)
+
+    def test_check_cooldown_stops_repeated_requests(self):
+        with tempfile.TemporaryDirectory() as folder, patch.object(trial, 'PRIVATE', Path(folder)), patch.object(trial, 'private_dir'), patch.object(trial.time, 'time', return_value=10000):
+            (Path(folder) / 'last-check').write_text('9900')
+            with self.assertRaises(trial.TrialError):
+                trial.check_cooldown()
+            (Path(folder) / 'last-check').write_text('9000')
+            trial.check_cooldown()
+
+    def test_feed_requires_account_content_and_recent_dates(self):
+        now = datetime(2026, 11, 3, 12, tzinfo=timezone.utc)
+        body = b'''<rss><channel><item><link>https://x.com/CoinWOfficial/status/123</link>
+        <pubDate>Tue, 03 Nov 2026 10:00:00 +0000</pubDate><description><![CDATA[
+        <script>hidden</script><p>Community news</p><img src="https://pbs.twimg.com/p.jpg"/>
+        ]]></description></item></channel></rss>'''
+        report = trial.inspect_feed(body, now)
+        self.assertEqual(report['recent'], 1)
+        self.assertEqual(report['samples'][0]['images'], 1)
+        self.assertNotIn('hidden', report['samples'][0]['preview'])
+        for invalid in (body.replace(b'CoinWOfficial', b'OtherAccount'), body.replace(b'2026 10:', b'2026 99:'), b'<html>sign in</html>', b'<!DOCTYPE rss><rss/>'):
+            with self.assertRaises(trial.TrialError):
+                trial.inspect_feed(invalid, now)
+        self.assertEqual(trial.inspect_feed(body.replace(b'2026 10:', b'2020 10:'), now)['recent'], 0)
+
+    def test_error_response_body_never_reaches_console(self):
+        import urllib.error
+        with tempfile.TemporaryDirectory() as folder, patch.object(trial, 'PRIVATE', Path(folder)), patch.object(trial, 'private_dir'), patch.object(trial, 'owned_exists', return_value=True), patch.object(trial, 'rsshub_ok', return_value=True), patch.object(trial, 'bot_ok', return_value=True), patch.object(trial.HTTP, 'open', side_effect=urllib.error.HTTPError(trial.FEED_URL, 500, 'sensitive', {}, io.BytesIO(b'private-cookie'))):
+            (Path(folder) / 'x.env').write_text('synthetic')
+            with self.assertRaises(trial.TrialError) as error:
+                trial.check_feed()
+            self.assertIn('500', str(error.exception))
+            self.assertNotIn('private', str(error.exception))
+            self.assertNotIn('sensitive', str(error.exception))
 
 
 if __name__ == '__main__':
