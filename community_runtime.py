@@ -527,6 +527,7 @@ class CommunityRuntime:
         threading.Thread(target=loop,args=(self.expire,1),daemon=True,name='group-verification-cleanup').start()
         threading.Thread(target=loop,args=(self.cleanup_messages,1),daemon=True,name='welcome-link-cleanup').start()
         threading.Thread(target=loop,args=(self.bot.guard.tick,2),daemon=True,name='spam-action-retries').start()
+        threading.Thread(target=loop,args=(self.bot.chat_rewards.prune,3600),daemon=True,name='chat-reward-metadata-prune').start()
         threading.Thread(target=loop,args=(self.process_announcements,2),daemon=True,name='announcement-scheduler').start()
         threading.Thread(target=loop,args=(self.probe_migrations,300),daemon=True,name='group-migration-repair').start()
         threading.Thread(target=loop,args=(self.repair_referrals,30),daemon=True,name='invitation-credit-repair').start()

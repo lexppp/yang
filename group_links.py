@@ -1,6 +1,7 @@
 """Canonical group IDs, reversible connection removal and safe Telegram group migration."""
 import json
 import time
+from engagement import reconcile_migration
 
 
 def initialize(db):
@@ -84,6 +85,8 @@ def migrate(store, old, new):
         db.execute('DELETE FROM member_arrivals WHERE group_id=?',(old,))
         for table in ('invites','logs','announcement_plans','announcement_deliveries'):
             db.execute(f'UPDATE {table} SET group_id=? WHERE group_id=?',(target,old))
+        db.execute('UPDATE engagement_messages SET group_id=? WHERE group_id=?',(target,old))
+        reconcile_migration(db,target)
         db.execute('UPDATE groups SET active=0 WHERE id=?',(old,))
         # Do not replay moderation actions against a migrated chat with mismatched message IDs.
         db.execute("UPDATE moderation_jobs SET status='cancelled' WHERE group_id=? AND status='pending'",(old,))

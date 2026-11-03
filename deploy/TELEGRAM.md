@@ -18,6 +18,7 @@
 
 ```text
 link - Get your personal invite link
+rankings - View this group points leaderboard
 fileid - Get a welcome photo ID in private chat
 start - Show check-in and invitation help
 ```
@@ -158,3 +159,14 @@ sudo python3 update_link.py
 安装后在新标签打开 `https://panel.chloehub.top/?v=announcement-languages` 并重新登录。“公告正文（支持多语言）”可直接填写中文、日文、英文或其他语言，也可以混合；图片不限制语言，不再要求勾选英文确认。纯文字最多4096字，带图片正文最多1024字。
 
 先保存草稿并重新编辑检查原文，再在测试群/指定话题立即发送一条中文或日文图文，检查发送和置顶记录。定时一次及每天多时段也使用相同的多语言发送逻辑。已有历史失败/发送未确认任务不会因更新而自动重发，请先核对群内消息，避免重复。
+
+
+## 发言积分与 /Rankings 更新
+
+使用最新 `update_chat_rewards.py` 更新器，保留账号、Token、公告、欢迎词、防广告、签到和邀请数据。它自动备份代码与SQLite并重启服务；无需重新绑定机器人。浏览器新标签打开 `https://panel.chloehub.top/?v=chat-rewards` 并重新登录。
+
+默认满10个文字/数字字符，每条5分，每人每群每日最多50分，UTC+8午夜重新开放额度；签到和邀请另计。后台“社群设置→积分规则”可开关/调整，需要修改奖励规则权限。空白、纯表情、机械重复、广告、转发、命令和机器人代发不计，重复接收和编辑不会多发奖。无需逐条回复加分消息，后台积分自动更新。
+
+群内发送 `/Rankings`（也支持小写及机器人用户名后缀）查看当前群累计前10名、自己的名次和今日发言积分；包含签到、邀请和发言，保留原始昵称。同分按用户ID顺序，另一个群的积分不会混入。若想加入Telegram命令菜单，可在BotFather原有菜单中加 `rankings - View this group points leaderboard`，不要覆盖丢失其他菜单项。
+
+先在测试群用普通成员发一条含10个文字/数字字符的正常内容，再发 `/Rankings` 检查+5分；发不同合格内容验证每日50分上限，不要连续刷屏（会撤销整段发言奖励）。系统对后续识别为刷屏或被编辑成广告的原奖励做有日志的冲回，不影响签到/邀请。旧消息不补发；新到达的消息以Telegram发送时间归属自然日，不会因服务器重启后批量收取而误当刷屏。

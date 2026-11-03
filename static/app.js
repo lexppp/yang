@@ -35,7 +35,7 @@ function table(headers, rows){return rows.length?`<div class="table-scroll"><tab
 function selectedGroups(){return data.groups.filter(g=>!group || String(g.id)===group);}
 function stats(){
  const gs=selectedGroups(), sum=k=>gs.reduce((a,g)=>a+g[k],0);
- const items=[['已连接社群',gs.filter(g=>g.active).length,'▦','已获取管理员权限的社群'],['已记录成员',sum('users'),'♧','接入后观察到的成员，非全群历史人数'],['累计积分',sum('credits'),'✧','签到与邀请贡献，持续沉淀'],['今日签到',sum('checkins'),'✓','每天 00:00（UTC+8）刷新']];
+ const items=[['已连接社群',gs.filter(g=>g.active).length,'▦','已获取管理员权限的社群'],['已记录成员',sum('users'),'♧','接入后观察到的成员，非全群历史人数'],['累计积分',sum('credits'),'✧','签到、邀请与发言贡献，持续沉淀'],['今日签到',sum('checkins'),'✓','每天 00:00（UTC+8）刷新']];
  return '<div class="stats">'+items.map(([label,value,icon,foot])=>`<div class="stat"><div class="stat-top">${label}<span class="stat-icon">${icon}</span></div><div class="stat-value">${num(value)}</div><div class="stat-foot">${foot}</div></div>`).join('')+'</div>';
 }
 function groupsPanel(){
@@ -95,7 +95,7 @@ function settingsValue(el){return el.type==='checkbox'?el.checked:el.type==='num
 function openSettings(id){
  const g=data.groups.find(g=>g.id===Number(id));if(!g)return;
  const f=$('#settings-form');clearSettingsErrors();$('#settings-title').textContent=g.title;$('#moderation-health').textContent='';
- const defaults={verify_minutes:4,welcome_delete_minutes:4,link_delete_minutes:2,checkin_points:5,invite_points:20,spam_strikes:2,spam_mute_minutes:1440,block_links:1,block_photos:0,block_ads:1,verify:1,block_mentions:1,block_buttons:1,block_forwards:1,block_sender_chat:1,block_repeats:1,block_flood:1};
+ const defaults={verify_minutes:4,welcome_delete_minutes:4,link_delete_minutes:2,checkin_points:5,invite_points:20,spam_strikes:2,spam_mute_minutes:1440,chat_rewards_enabled:1,chat_reward_points:5,chat_daily_cap:50,chat_min_chars:10,block_links:1,block_photos:0,block_ads:1,verify:1,block_mentions:1,block_buttons:1,block_forwards:1,block_sender_chat:1,block_repeats:1,block_flood:1};
  f._original={};
  for(const el of f.elements){if(!el.name)continue;const value=el.name==='group_id'?g.id:g[el.name]??defaults[el.name]??'';if(el.type==='checkbox')el.checked=!!value;else el.value=value;f._original[el.name]=settingsValue(el);}
  $('#settings-dialog').showModal();

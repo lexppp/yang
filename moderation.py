@@ -102,14 +102,17 @@ class SpamGuard:
         if message.get('sender_chat') and group.get('block_sender_chat',1):
             reason='外部频道身份发言'
         at=time.time();gid=group['id'];mid=message['message_id']
+        # Backlogged messages retain their actual send spacing after a service restart.
+        source_at=message.get('date',at)
+        if type(source_at) not in (int,float) or source_at>at+300:source_at=at
         with self.lock:
             with self.store.db() as db:
                 text=compact(message.get('text',message.get('caption','')))
                 signature=hashlib.sha256(text.encode()).hexdigest() if len(text)>=24 else ''
                 if user_id is not None and not edited:
-                    db.execute('INSERT OR IGNORE INTO moderation_seen VALUES(?,?,?,?,?)',(gid,mid,user_id,at,signature))
-                    count=db.execute('SELECT COUNT(*) FROM moderation_seen WHERE group_id=? AND user_id=? AND created>?',(gid,user_id,at-10)).fetchone()[0]
-                    repeated=db.execute('SELECT COUNT(*) FROM moderation_seen WHERE group_id=? AND user_id=? AND signature=? AND created>?',(gid,user_id,signature,at-600)).fetchone()[0] if signature else 0
+                    db.execute('INSERT OR IGNORE INTO moderation_seen VALUES(?,?,?,?,?)',(gid,mid,user_id,source_at,signature))
+                    count=db.execute('SELECT COUNT(*) FROM moderation_seen WHERE group_id=? AND user_id=? AND created>? AND created<=?',(gid,user_id,source_at-10,source_at)).fetchone()[0]
+                    repeated=db.execute('SELECT COUNT(*) FROM moderation_seen WHERE group_id=? AND user_id=? AND signature=? AND created>? AND created<=?',(gid,user_id,signature,source_at-600,source_at)).fetchone()[0] if signature else 0
                     if not reason and group.get('block_flood',1) and count>8:reason='10秒内超过8条消息（刷屏）'
                     if not reason and group.get('block_repeats',1) and repeated>=3:reason='10分钟内重复发布相同长文本'
                 if not reason:return False
@@ -120,6 +123,8 @@ class SpamGuard:
                 if inserted and user_id is not None and mute and strikes>=group.get('spam_strikes',2):
                     db.execute("INSERT OR IGNORE INTO moderation_jobs(group_id,message_id,kind,user_id,until_date,created,next_attempt) VALUES(?,?,'mute',?,?,?,?)",(gid,mid,user_id,int(at+mute*60),at,at))
             if inserted:self.store.event(gid,user_id,'广告拦截',reason+f' · message_id={mid}；已安排删除'+('及禁言' if mute and strikes>=group.get('spam_strikes',2) and user_id is not None else ''))
+        if user_id is not None:
+            self.bot.chat_rewards.exclude(gid,user_id,mid,reason,origin_gid=message.get('chat',{}).get('id'))
         self.process(group_id=gid,message_id=mid)
         return True
 

@@ -25,6 +25,7 @@ from auth import Accounts, AccessDenied, PERMISSIONS, allowed, required_permissi
 from community_runtime import CommunityRuntime, initialize as initialize_community, snapshot as community_snapshot
 from group_links import initialize as initialize_links, resolve as resolve_group, migrate as migrate_group, visible_sql, disconnect as disconnect_group
 from moderation import initialize as initialize_moderation, moderation_reason, SpamGuard, SETTINGS as MODERATION_SETTINGS, BOOL_DEFAULTS as MODERATION_SWITCHES
+from engagement import initialize as initialize_engagement, ChatRewards, SETTINGS as CHAT_REWARD_SETTINGS
 
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
@@ -104,6 +105,7 @@ class Store:
             initialize_community(db)
             initialize_links(db)
             initialize_moderation(db)
+            initialize_engagement(db)
 
     @contextmanager
     def db(self):
@@ -213,10 +215,10 @@ class Telegram:
     def __init__(self, token):
         self.token = token
 
-    def call(self, method, *, _welcome=False, _announcement=False, **params):
+    def call(self, method, *, _welcome=False, _announcement=False, _user_content=False, **params):
         # User-authored welcomes/announcements are Unicode content, independent of system text.
         # Consume private options here; never send them to Telegram as API fields.
-        if not ((_welcome is True or _announcement is True) and method in ('sendMessage','sendPhoto')):
+        if not ((_welcome is True or _announcement is True or _user_content is True) and method in ('sendMessage','sendPhoto')):
             validate_telegram_text(params)
         req = urllib.request.Request('https://api.telegram.org/bot'+self.token+'/'+method,
                                      data=json.dumps(params).encode(), headers={'Content-Type': 'application/json'})
@@ -246,12 +248,14 @@ class Bot:
         self.identity = None
         self.community = CommunityRuntime(self,is_english_text)
         self.guard = SpamGuard(self)
+        self.chat_rewards = ChatRewards(self)
 
-    def send(self, gid, text, *, _welcome=False, _announcement=False, **kwargs):
-        if not (_welcome or _announcement):
+    def send(self, gid, text, *, _welcome=False, _announcement=False, _user_content=False, **kwargs):
+        if not (_welcome or _announcement or _user_content):
             validate_telegram_text({'text': text, **kwargs})
         if _welcome:kwargs['_welcome']=True
         if _announcement:kwargs['_announcement']=True
+        if _user_content:kwargs['_user_content']=True
         return self.api.call('sendMessage', chat_id=gid, text=text, **kwargs)
 
     def invite(self, gid, user):
@@ -382,17 +386,19 @@ class Bot:
         text = item.get('text', item.get('caption', ''))
         with self.store.db() as db:
             db.execute('UPDATE groups SET messages=messages+?,last_activity=? WHERE id=?', (0 if 'edited_message' in update else 1, now().isoformat(), gid))
+        if 'edited_message' not in update:
+            self.chat_rewards.observe(group,item)
         # Group administrators are exempt from moderation, but can sign in.
         try:
             admin = self.api.call('getChatMember', chat_id=gid, user_id=user['id'])['status'] in ('administrator', 'creator')
         except TelegramError:
             # Preserve suspected spam for retry rather than losing the update. Jobs recheck
             # administrator status before deleting/restricting, including after a restart.
-            self.guard.inspect(group,item,user['id'],edited='edited_message' in update)
-            return
+            admin = False
         if not admin and self.guard.inspect(group,item,user['id'],edited='edited_message' in update):
             return
         if 'edited_message' in update:
+            self.chat_rewards.award(group,item,edited=True)
             return
         if text.strip().casefold() == 'coinw':
             points = self.store.checkin(gid, user['id'])
@@ -407,6 +413,14 @@ class Bot:
                 earned = db.execute("SELECT COALESCE(SUM(points),0) FROM ledger WHERE group_id=? AND user_id=? AND kind='invite'", (gid,user['id'])).fetchone()[0]
             result=self.send(gid, f'🔗 Your personal invite link\n{link}\n\n👥 Successful invites: {count}\n💎 Invite points earned: {earned}\nEach successful invite earns {group["invite_points"]} points. Rejoining members do not earn additional rewards.', reply_parameters={'message_id': item['message_id']})
             self.community.schedule_cleanup(group,result,'link',user['id'])
+        elif re.fullmatch(r'/rankings(?:@[A-Za-z0-9_]+)?',text.strip(),re.I):
+            target=text.strip().partition('@')[2]
+            if target and self.identity and target.casefold()!=self.identity.get('username','').casefold():return
+            self.send(gid,self.chat_rewards.rankings(gid,user['id']),_user_content=True,parse_mode='HTML',
+                      reply_parameters={'message_id':item['message_id']},link_preview_options={'is_disabled':True},
+                      **({'message_thread_id':item['message_thread_id']} if item.get('message_thread_id') else {}))
+        else:
+            self.chat_rewards.award(group,item)
 
     def run(self):
         delay = 2
@@ -670,10 +684,11 @@ class Handler(BaseHTTPRequestHandler):
                 gid = data['group_id']
                 allowed_fields = {'welcome','welcome_photo','block_links','block_photos','block_ads','keywords','verify','verify_minutes','welcome_delete_minutes','link_delete_minutes','checkin_points','invite_points','language'}
                 allowed_fields.update(MODERATION_SETTINGS)
+                allowed_fields.update(CHAT_REWARD_SETTINGS)
                 changes = {k:v for k,v in data.items() if k in allowed_fields}
                 if not changes:
                     raise SettingsError('','没有可保存的设置')
-                for key in ['block_links','block_photos','block_ads','verify',*MODERATION_SWITCHES]:
+                for key in ['block_links','block_photos','block_ads','verify','chat_rewards_enabled',*MODERATION_SWITCHES]:
                     if key in changes and type(changes[key]) is not bool:
                         raise SettingsError(key,'开关设置无效，请重新选择开关状态')
                 if 'verify_minutes' in changes and (type(changes['verify_minutes']) is not int or not 1 <= changes['verify_minutes'] <= 1440):
@@ -682,13 +697,16 @@ class Handler(BaseHTTPRequestHandler):
                     if key in changes and (type(changes[key]) is not int or not 0<=changes[key]<=1440):
                         label='欢迎语' if key=='welcome_delete_minutes' else '邀请链接消息'
                         raise SettingsError(key,label+'自动删除时间须为0至1440分钟的整数，0表示保留')
-                for key in ['checkin_points','invite_points']:
+                for key in ['checkin_points','invite_points','chat_reward_points']:
                     if key in changes and (type(changes[key]) is not int or not 0 <= changes[key] <= 10000):
-                        label='每日签到积分' if key=='checkin_points' else '有效邀请积分'
+                        label={'checkin_points':'每日签到积分','invite_points':'有效邀请积分','chat_reward_points':'每条有效发言积分'}[key]
                         raise SettingsError(key,label+'须为0至10000的整数')
                 for key,minimum,maximum in [('spam_mute_minutes',0,10080),('spam_strikes',1,10)]:
                     if key in changes and (type(changes[key]) is not int or not minimum<=changes[key]<=maximum):
                         raise SettingsError(key,'违规次数须为1–10次' if key=='spam_strikes' else '违规禁言时间须为0–10080分钟的整数（0仅删除）')
+                for key,minimum,maximum,label in [('chat_daily_cap',0,100000,'每日发言积分上限'),('chat_min_chars',1,4096,'有效发言最低字符数')]:
+                    if key in changes and (type(changes[key]) is not int or not minimum<=changes[key]<=maximum):
+                        raise SettingsError(key,f'{label}须为{minimum}至{maximum}的整数')
                 for key in ['welcome','welcome_photo','keywords','language','allowed_mentions']:
                     if key in changes and (not isinstance(changes[key], str) or len(changes[key]) > (900 if key=='welcome' else 1000)):
                         label={'welcome':'欢迎词','welcome_photo':'欢迎图片','keywords':'广告关键词','language':'系统提示语言','allowed_mentions':'允许提及的账号'}[key]
